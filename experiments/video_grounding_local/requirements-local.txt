@@ -1,0 +1,8 @@
+# Legacy visual-inference dependencies. For a standalone model environment,
+# install the repository-root requirements-models.txt instead.
+ftfy==6.3.1
+easydict==1.13
+imageio-ffmpeg==0.7.0
+ffmpeg-python==0.2.0
+numpy==1.26.4
+scipy

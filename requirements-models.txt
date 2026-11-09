@@ -1,0 +1,19 @@
+# Install into experiments/video_grounding_local/.venv (Python 3.11).
+# For a CUDA-specific PyTorch wheel, install torch/torchvision first using
+# the command recommended by https://pytorch.org/get-started/locally/.
+torch==2.6.0
+torchvision==0.21.0
+torchaudio==2.6.0
+numpy==1.26.4
+ftfy==6.3.1
+easydict==1.13
+imageio-ffmpeg==0.7.0
+ffmpeg-python==0.2.0
+requests>=2.32,<3
+scipy>=1.11
+Pillow>=10
+regex
+tqdm
+h5py
+librosa>=0.10
+soundfile

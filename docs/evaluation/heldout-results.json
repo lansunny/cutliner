@@ -1,0 +1,417 @@
+{
+  "selection": {
+    "selected_mode": "concat",
+    "seeds": [
+      42,
+      43,
+      44
+    ],
+    "development_means_f1": {
+      "visual": 0.6981760015518909,
+      "audio": 0.61188262549523,
+      "visual_wide": 0.7046910676964487,
+      "concat": 0.7843514654414299,
+      "gated": 0.7760523821835285
+    },
+    "rule": "Best mean dev F1 joint mode; >=3pp over strongest control and queryR1 no worse by>0.5pp",
+    "plan_sha256": "031801d53a6409ce9f001670375bc5349d3552420e98fa7944a26c8123cf0706",
+    "calibration_sha256": "594c2353b48f70a7ea647e7ad150b00f73335d3915825eab6ed06cae601f3f0a",
+    "native_assets_sha256": "a37120ad9df81e38d3064dd89bd663318061dad5853a110d7b7e102045ee8684",
+    "evaluation_source_sha256": "22610954b74ff1462fc5739b537286a93f29b4ac172367970cf0554a82d38440",
+    "checkpoints": {
+      "visual_seed42.pt": "8c5ff04320f5051e3465d7c06b1c934a60a5deff6ef10b25b5d87932ed1f4d26",
+      "visual_seed43.pt": "73489c3a67eda2481d769e5a6e32299ddfe07aaaa1049a5af2964a42b3b44ef0",
+      "visual_seed44.pt": "c01c39079c15ceabd86a974a7ed57c03709d47927977df9743273b9e8f8db545",
+      "audio_seed42.pt": "d628a56e94655544370fea0b8fb4a463119b5686a88456495d97688dc5f17d38",
+      "audio_seed43.pt": "e1b8112b3096b6679d737bcd4e74579626e5fcab63588f1a6c226faadb970791",
+      "audio_seed44.pt": "a9ba32913e4bfd45bfc50380a31f5bb67ed10fe1bb14de722837fbd7ca1df2ca",
+      "visual_wide_seed42.pt": "728f4c03b09684c951d468a40f6ecd77c987f2b6dfec6e5e240fdf985f46fad7",
+      "visual_wide_seed43.pt": "0d86e8e9acac6554f434ebb64f49707908c4f143c4ff76c11897542a73f65f56",
+      "visual_wide_seed44.pt": "03abbc3a11f91f857bd6ac77a4c014273584483d4323d833c64c4ccc0cfd25db",
+      "concat_seed42.pt": "ce537a0a8987c0e43158ab4814c9ed234f2fb010bf4e5f8f062a5322b8ddbbc6",
+      "concat_seed43.pt": "364bcb2ce21e788435d124c1b401522bf01e0031572209393d812190a58f0876",
+      "concat_seed44.pt": "c6f80556151b08be467ea5fda410689c8bda0b515ab6bcc63aa1879c130333ab",
+      "gated_seed42.pt": "c459bcb7a692d1a1671e41b8fd3a537f17db0e80c4dfa7ff43eab203757c319f",
+      "gated_seed43.pt": "e6f3c66863e9fcc43ce9baa63436b765777e851530d86d4b3cf058287a79cef6",
+      "gated_seed44.pt": "a560222f01e17dfc040ac52a9348b095f8a9434364a35b0fbb324b471249fb79"
+    },
+    "static_thresholds": {
+      "visual": 0.7000000000000002,
+      "audio": 0.6500000000000001,
+      "late_fusion": 0.5500000000000002
+    },
+    "thresholds": {
+      "visual_seed42": 0.5500000000000002,
+      "visual_seed43": 0.6500000000000001,
+      "visual_seed44": 0.6000000000000002,
+      "audio_seed42": 0.6500000000000001,
+      "audio_seed43": 0.7000000000000002,
+      "audio_seed44": 0.6500000000000001,
+      "visual_wide_seed42": 0.6500000000000001,
+      "visual_wide_seed43": 0.7000000000000002,
+      "visual_wide_seed44": 0.6500000000000001,
+      "concat_seed42": 0.5500000000000002,
+      "concat_seed43": 0.6000000000000002,
+      "concat_seed44": 0.5500000000000002,
+      "gated_seed42": 0.6000000000000002,
+      "gated_seed43": 0.6500000000000001,
+      "gated_seed44": 0.6500000000000001
+    },
+    "heldout_performance_seen_at_freeze": false,
+    "interpretation": "Auxiliary closed-taxonomy event tool; no claim of arbitrary query, dialogue reasoning, or long-video retrieval gains"
+  },
+  "results": {
+    "static_visual": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.7000000000000002,
+      "frame_macro_f1": 0.6030314601451965,
+      "frame_micro_f1": 0.6064370412196499,
+      "frame_exact_eventset_accuracy": 0.48930232558139536,
+      "event_query_R1_iou0.5": 0.4772727272727273,
+      "event_query_mean_iou": 0.48218253968253966,
+      "source_macro_event_R1_iou0.5": 0.4813953488372093,
+      "partial_event_query_R1_iou0.5": 0.3780487804878049,
+      "unannotated_query_alarm_rate": 0.028620689655172414,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "static_audio": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6500000000000001,
+      "frame_macro_f1": 0.5376847923385717,
+      "frame_micro_f1": 0.5483359746434231,
+      "frame_exact_eventset_accuracy": 0.39813953488372095,
+      "event_query_R1_iou0.5": 0.5272727272727272,
+      "event_query_mean_iou": 0.4888492063492064,
+      "source_macro_event_R1_iou0.5": 0.5348837209302325,
+      "partial_event_query_R1_iou0.5": 0.4268292682926829,
+      "unannotated_query_alarm_rate": 0.04603448275862069,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "static_late_fusion": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.5500000000000002,
+      "frame_macro_f1": 0.6846490830051344,
+      "frame_micro_f1": 0.6670074111934577,
+      "frame_exact_eventset_accuracy": 0.5455813953488372,
+      "event_query_R1_iou0.5": 0.6454545454545455,
+      "event_query_mean_iou": 0.6206313131313131,
+      "source_macro_event_R1_iou0.5": 0.6534883720930232,
+      "partial_event_query_R1_iou0.5": 0.5609756097560976,
+      "unannotated_query_alarm_rate": 0.026379310344827586,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "visual_seed42": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.5500000000000002,
+      "frame_macro_f1": 0.7336789865908305,
+      "frame_micro_f1": 0.7269004351164576,
+      "frame_exact_eventset_accuracy": 0.621860465116279,
+      "event_query_R1_iou0.5": 0.6636363636363637,
+      "event_query_mean_iou": 0.6549242424242423,
+      "source_macro_event_R1_iou0.5": 0.6767441860465117,
+      "partial_event_query_R1_iou0.5": 0.5487804878048781,
+      "unannotated_query_alarm_rate": 0.022758620689655173,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "visual_seed43": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6500000000000001,
+      "frame_macro_f1": 0.7419337317706408,
+      "frame_micro_f1": 0.7424822307271733,
+      "frame_exact_eventset_accuracy": 0.6427906976744187,
+      "event_query_R1_iou0.5": 0.6727272727272727,
+      "event_query_mean_iou": 0.6301406926406926,
+      "source_macro_event_R1_iou0.5": 0.6837209302325581,
+      "partial_event_query_R1_iou0.5": 0.5487804878048781,
+      "unannotated_query_alarm_rate": 0.018620689655172412,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "visual_seed44": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6000000000000002,
+      "frame_macro_f1": 0.7240839717078859,
+      "frame_micro_f1": 0.7190707725553754,
+      "frame_exact_eventset_accuracy": 0.6116279069767442,
+      "event_query_R1_iou0.5": 0.6681818181818182,
+      "event_query_mean_iou": 0.6283964646464646,
+      "source_macro_event_R1_iou0.5": 0.6767441860465117,
+      "partial_event_query_R1_iou0.5": 0.6219512195121951,
+      "unannotated_query_alarm_rate": 0.020344827586206895,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "audio_seed42": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6500000000000001,
+      "frame_macro_f1": 0.5731023472588396,
+      "frame_micro_f1": 0.5878251541968356,
+      "frame_exact_eventset_accuracy": 0.46,
+      "event_query_R1_iou0.5": 0.5454545454545454,
+      "event_query_mean_iou": 0.5136147186147186,
+      "source_macro_event_R1_iou0.5": 0.5465116279069767,
+      "partial_event_query_R1_iou0.5": 0.4878048780487805,
+      "unannotated_query_alarm_rate": 0.03586206896551724,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "audio_seed43": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.7000000000000002,
+      "frame_macro_f1": 0.5679437725085937,
+      "frame_micro_f1": 0.5835164835164836,
+      "frame_exact_eventset_accuracy": 0.45813953488372094,
+      "event_query_R1_iou0.5": 0.5409090909090909,
+      "event_query_mean_iou": 0.5066720779220779,
+      "source_macro_event_R1_iou0.5": 0.5488372093023256,
+      "partial_event_query_R1_iou0.5": 0.4634146341463415,
+      "unannotated_query_alarm_rate": 0.03913793103448276,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "audio_seed44": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6500000000000001,
+      "frame_macro_f1": 0.5744150038535784,
+      "frame_micro_f1": 0.5864742047580861,
+      "frame_exact_eventset_accuracy": 0.44558139534883723,
+      "event_query_R1_iou0.5": 0.5318181818181819,
+      "event_query_mean_iou": 0.5051695526695527,
+      "source_macro_event_R1_iou0.5": 0.5395348837209303,
+      "partial_event_query_R1_iou0.5": 0.4634146341463415,
+      "unannotated_query_alarm_rate": 0.04017241379310345,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "visual_wide_seed42": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6500000000000001,
+      "frame_macro_f1": 0.7343860065066655,
+      "frame_micro_f1": 0.7428406132484814,
+      "frame_exact_eventset_accuracy": 0.6381395348837209,
+      "event_query_R1_iou0.5": 0.6136363636363636,
+      "event_query_mean_iou": 0.5999296536796537,
+      "source_macro_event_R1_iou0.5": 0.6232558139534884,
+      "partial_event_query_R1_iou0.5": 0.5121951219512195,
+      "unannotated_query_alarm_rate": 0.008793103448275863,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "visual_wide_seed43": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.7000000000000002,
+      "frame_macro_f1": 0.7499738529207354,
+      "frame_micro_f1": 0.7539659648110758,
+      "frame_exact_eventset_accuracy": 0.6586046511627907,
+      "event_query_R1_iou0.5": 0.6409090909090909,
+      "event_query_mean_iou": 0.6154491341991342,
+      "source_macro_event_R1_iou0.5": 0.6511627906976745,
+      "partial_event_query_R1_iou0.5": 0.5121951219512195,
+      "unannotated_query_alarm_rate": 0.010172413793103447,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "visual_wide_seed44": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6500000000000001,
+      "frame_macro_f1": 0.7383564356747235,
+      "frame_micro_f1": 0.7336076817558299,
+      "frame_exact_eventset_accuracy": 0.6162790697674418,
+      "event_query_R1_iou0.5": 0.6681818181818182,
+      "event_query_mean_iou": 0.621605339105339,
+      "source_macro_event_R1_iou0.5": 0.6767441860465117,
+      "partial_event_query_R1_iou0.5": 0.573170731707317,
+      "unannotated_query_alarm_rate": 0.015517241379310345,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "concat_seed42": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.5500000000000002,
+      "frame_macro_f1": 0.8069940387801632,
+      "frame_micro_f1": 0.8106241699867198,
+      "frame_exact_eventset_accuracy": 0.7097674418604651,
+      "event_query_R1_iou0.5": 0.759090909090909,
+      "event_query_mean_iou": 0.7227272727272728,
+      "source_macro_event_R1_iou0.5": 0.7651162790697674,
+      "partial_event_query_R1_iou0.5": 0.6097560975609756,
+      "unannotated_query_alarm_rate": 0.010689655172413793,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "concat_seed43": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6000000000000002,
+      "frame_macro_f1": 0.8147526265607113,
+      "frame_micro_f1": 0.8153439153439154,
+      "frame_exact_eventset_accuracy": 0.7195348837209302,
+      "event_query_R1_iou0.5": 0.7863636363636364,
+      "event_query_mean_iou": 0.7433585858585858,
+      "source_macro_event_R1_iou0.5": 0.7976744186046512,
+      "partial_event_query_R1_iou0.5": 0.6219512195121951,
+      "unannotated_query_alarm_rate": 0.012413793103448275,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "concat_seed44": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.5500000000000002,
+      "frame_macro_f1": 0.8085561933961031,
+      "frame_micro_f1": 0.8105750885799945,
+      "frame_exact_eventset_accuracy": 0.7195348837209302,
+      "event_query_R1_iou0.5": 0.759090909090909,
+      "event_query_mean_iou": 0.7178896103896105,
+      "source_macro_event_R1_iou0.5": 0.7674418604651163,
+      "partial_event_query_R1_iou0.5": 0.6341463414634146,
+      "unannotated_query_alarm_rate": 0.010344827586206896,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "gated_seed42": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6000000000000002,
+      "frame_macro_f1": 0.8013468362149467,
+      "frame_micro_f1": 0.8018763796909493,
+      "frame_exact_eventset_accuracy": 0.7102325581395349,
+      "event_query_R1_iou0.5": 0.740909090909091,
+      "event_query_mean_iou": 0.7044264069264069,
+      "source_macro_event_R1_iou0.5": 0.7511627906976744,
+      "partial_event_query_R1_iou0.5": 0.6219512195121951,
+      "unannotated_query_alarm_rate": 0.008103448275862069,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "gated_seed43": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6500000000000001,
+      "frame_macro_f1": 0.7998713528980169,
+      "frame_micro_f1": 0.8033631678871711,
+      "frame_exact_eventset_accuracy": 0.7093023255813954,
+      "event_query_R1_iou0.5": 0.75,
+      "event_query_mean_iou": 0.7124350649350649,
+      "source_macro_event_R1_iou0.5": 0.7581395348837209,
+      "partial_event_query_R1_iou0.5": 0.5853658536585366,
+      "unannotated_query_alarm_rate": 0.010689655172413793,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    },
+    "gated_seed44": {
+      "source_videos": 215,
+      "positive_event_queries": 220,
+      "threshold": 0.6500000000000001,
+      "frame_macro_f1": 0.8056846288917446,
+      "frame_micro_f1": 0.8045092108880946,
+      "frame_exact_eventset_accuracy": 0.713953488372093,
+      "event_query_R1_iou0.5": 0.7545454545454545,
+      "event_query_mean_iou": 0.6973791486291485,
+      "source_macro_event_R1_iou0.5": 0.7604651162790698,
+      "partial_event_query_R1_iou0.5": 0.6097560975609756,
+      "unannotated_query_alarm_rate": 0.009137931034482759,
+      "absence_limit": "Non-annotated classes are benchmark negatives, not exhaustively human-verified no-target queries"
+    }
+  },
+  "paired_comparisons": {
+    "static_visual": {
+      "frame_macro_f1": {
+        "paired_source_bootstrap95ci_pp": [
+          17.066995348099358,
+          25.400789373614636
+        ],
+        "resamples": 2000
+      },
+      "event_query_R1_iou0.5": {
+        "paired_source_bootstrap95ci_pp": [
+          22.272727272727284,
+          36.03603603603604
+        ],
+        "resamples": 2000
+      }
+    },
+    "static_audio": {
+      "frame_macro_f1": {
+        "paired_source_bootstrap95ci_pp": [
+          23.94672999674505,
+          31.260476771785918
+        ],
+        "resamples": 2000
+      },
+      "event_query_R1_iou0.5": {
+        "paired_source_bootstrap95ci_pp": [
+          18.417047184170478,
+          30.261489028875825
+        ],
+        "resamples": 2000
+      }
+    },
+    "static_late_fusion": {
+      "frame_macro_f1": {
+        "paired_source_bootstrap95ci_pp": [
+          9.833582635711052,
+          15.911871161042493
+        ],
+        "resamples": 2000
+      },
+      "event_query_R1_iou0.5": {
+        "paired_source_bootstrap95ci_pp": [
+          6.544901065449016,
+          17.81996858609761
+        ],
+        "resamples": 2000
+      }
+    },
+    "visual": {
+      "frame_macro_f1": {
+        "paired_source_bootstrap95ci_pp": [
+          5.417226774218309,
+          10.548862970180252
+        ],
+        "resamples": 2000
+      },
+      "event_query_R1_iou0.5": {
+        "paired_source_bootstrap95ci_pp": [
+          5.4292527821939505,
+          14.916286149162861
+        ],
+        "resamples": 2000
+      }
+    },
+    "audio": {
+      "frame_macro_f1": {
+        "paired_source_bootstrap95ci_pp": [
+          20.539912630084807,
+          28.010182137503612
+        ],
+        "resamples": 2000
+      },
+      "event_query_R1_iou0.5": {
+        "paired_source_bootstrap95ci_pp": [
+          17.272590772590764,
+          28.701240862460825
+        ],
+        "resamples": 2000
+      }
+    },
+    "visual_wide": {
+      "frame_macro_f1": {
+        "paired_source_bootstrap95ci_pp": [
+          4.4881384944956295,
+          9.880869081523326
+        ],
+        "resamples": 2000
+      },
+      "event_query_R1_iou0.5": {
+        "paired_source_bootstrap95ci_pp": [
+          7.913864674138646,
+          17.798146655922633
+        ],
+        "resamples": 2000
+      }
+    }
+  },
+  "uncertainty": "Resample original source videos, paired across methods; seed-average effects. Not frame-independent intervals.",
+  "limits": "Derived class-capped, grouped AVE task; AudioSet-pretrained audio backbone. Not arbitrary-query or long-video Agent evaluation."
+}

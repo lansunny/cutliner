@@ -1,0 +1,10 @@
+{
+  "run_dir": "event_runs/20261108_002238_997129",
+  "selected_mode": "concat",
+  "deployment_seed": 42,
+  "selection_rule": "Mode selected by development seed-mean F1; deployment uses first prespecified seed, not best heldout seed",
+  "checkpoint_sha256": "ce537a0a8987c0e43158ab4814c9ed234f2fb010bf4e5f8f062a5322b8ddbbc6",
+  "frozen_selection_sha256": "042c19efeb0947013300974b3fd823f70d0966c5acb80c2443166756dd350f4a",
+  "heldout_results_sha256": "16ede93f8ccae43ea8431ff7f633cb87a230a700ff454fd10d51782d8b66530a",
+  "scope": "Auxiliary local evidence for 28 audible-and-visible event activities, not arbitrary dialogue or full-query certification"
+}

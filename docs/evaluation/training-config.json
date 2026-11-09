@@ -1,0 +1,36 @@
+{
+  "modes": [
+    "visual",
+    "audio",
+    "visual_wide",
+    "concat",
+    "gated"
+  ],
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "epochs": 30,
+  "batch_size": 64,
+  "lr": 0.0005,
+  "heldout_accessed": false,
+  "pretrained_encoders_frozen": true,
+  "task": "AVE-derived 28-class multi-label 1-second audible-and-visible events; not original query-grounding or official AVE benchmark",
+  "split": "Author source splits group-cleaned test>dev>train; hash-selected class caps32/8/8",
+  "selection": "dev frame-macro F1, with global threshold0.1..0.9 on dev; epoch0 and every5epochs",
+  "decoder": "Contiguous thresholded seconds; highest sum(prob-threshold) interval per event query",
+  "priors": "Native CLIP/PANN class evidence, train-only 56-parameter affine calibrations; alpha fit train only",
+  "pretraining_limit": "PANN is pretrained on AudioSet, which is the source collection of AVE; not unseen-source or zero-shot audio evidence",
+  "head_training_sources": 892,
+  "dev_sources": 215,
+  "prior_visual_alpha": 0.5,
+  "plan_sha256": "031801d53a6409ce9f001670375bc5349d3552420e98fa7944a26c8123cf0706",
+  "source_sha256": {
+    "event_dataset.py": "73a4d7e4d5a73d41057af8c6ac08ba0058f9a501ba04d43da5884b3e0cce1c24",
+    "model_events.py": "fe82a7a0126f370a181ae587ccedcf01189933715804cef23b838fa4f44f47d2",
+    "train_events.py": "18cf7259d8ecb2e99c0d17ee54dcde8f8f2213cde9394a266c9195e0d0749fab",
+    "extract_ave.py": "b9f9852192e9d47a7523a7e7999b9cfbb8d1561c04fd8b4e5b48a36471951430",
+    "audio_encoder.py": "60b110a01c6178fd96df5900d26ad334ad4b05c4c9f5c1cf581e8a7f7335b34a"
+  }
+}

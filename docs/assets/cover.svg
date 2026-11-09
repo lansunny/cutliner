@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="440" viewBox="0 0 1280 440" role="img" aria-label="cutliner — Find the moment. Make the cut.">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#26c5d4"/><stop offset=".48" stop-color="#82dbd7"/><stop offset="1" stop-color="#ff8599"/></linearGradient>
+    <radialGradient id="sun"><stop stop-color="#ffd176"/><stop offset=".52" stop-color="#ffad6e"/><stop offset="1" stop-color="#ffa777" stop-opacity="0"/></radialGradient>
+    <radialGradient id="lagoon"><stop stop-color="#25c6dc"/><stop offset="1" stop-color="#12a4cc" stop-opacity="0"/></radialGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2=".7" y2="1"><stop stop-color="#fff" stop-opacity=".58"/><stop offset=".55" stop-color="#fff" stop-opacity=".1"/><stop offset="1" stop-color="#fff" stop-opacity=".3"/></linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff" stop-opacity=".95"/><stop offset=".5" stop-color="#fff" stop-opacity=".2"/><stop offset="1" stop-color="#fff" stop-opacity=".8"/></linearGradient>
+    <clipPath id="round"><rect width="1280" height="440" rx="28"/></clipPath>
+  </defs>
+  <g clip-path="url(#round)">
+    <rect width="1280" height="440" fill="url(#sky)"/>
+    <ellipse cx="815" cy="420" rx="590" ry="430" fill="url(#sun)"/>
+    <ellipse cx="180" cy="30" rx="660" ry="460" fill="url(#lagoon)"/>
+    <path d="M-140 410C160-250 630 700 1250-120" fill="none" stroke="#fff" stroke-opacity=".12" stroke-width="100"/>
+    <path d="M-130 366C170-294 640 656 1260-164" fill="none" stroke="#fff" stroke-opacity=".36" stroke-width="1.5"/>
+    <path d="M560 600C620 210 1020 160 1450 260" fill="none" stroke="#fff" stroke-opacity=".15" stroke-width="90"/>
+    <text x="66" y="66" fill="#18465a" font-family="Arial,sans-serif" font-size="13" letter-spacing="3">VIDEO · AUDIO · AGENT</text>
+    <text x="62" y="205" fill="#14384e" font-family="Arial,Helvetica,sans-serif" font-size="116" font-weight="800" letter-spacing="-8">cutliner<tspan fill="#ffffff">.</tspan></text>
+    <text x="69" y="260" fill="#1d4c61" font-family="Arial,sans-serif" font-size="27" letter-spacing="-.5">Find the moment. Make the cut.</text>
+    <g transform="translate(68 304)"><rect width="145" height="42" rx="21" fill="url(#glass)" stroke="url(#rim)"/><text x="72.5" y="27" text-anchor="middle" fill="#204e64" font-family="Arial,sans-serif" font-size="13">Neural retrieval</text></g>
+    <g transform="translate(224 304)"><rect width="135" height="42" rx="21" fill="url(#glass)" stroke="url(#rim)"/><text x="67.5" y="27" text-anchor="middle" fill="#204e64" font-family="Arial,sans-serif" font-size="13">Agent review</text></g>
+    <g transform="translate(370 304)"><rect width="125" height="42" rx="21" fill="url(#glass)" stroke="url(#rim)"/><text x="62.5" y="27" text-anchor="middle" fill="#204e64" font-family="Arial,sans-serif" font-size="13">Precise cuts</text></g>
+    <g transform="translate(784 78)">
+      <rect width="386" height="252" rx="32" fill="url(#glass)" stroke="url(#rim)" stroke-width="1.5"/>
+      <rect x="20" y="20" width="346" height="154" rx="20" fill="#194459" fill-opacity=".78" stroke="#fff" stroke-opacity=".35"/>
+      <path d="M41 124C83 110 99 71 135 87S183 139 225 90 285 68 343 78" fill="none" stroke="#a9e7e5" stroke-width="2" stroke-opacity=".7"/>
+      <rect x="110" y="50" width="164" height="95" rx="16" fill="url(#glass)" stroke="url(#rim)"/>
+      <circle cx="192" cy="97" r="25" fill="url(#glass)" stroke="url(#rim)"/>
+      <path d="M187 87L201 97 187 107Z" fill="#fff"/>
+      <g transform="translate(24 198)" fill="#b1f3eb"><rect width="338" height="24" rx="7" fill="#184c62" fill-opacity=".28"/><rect x="46" y="-3" width="192" height="30" rx="7" fill="none" stroke="#fff" stroke-opacity=".9" stroke-width="2"/><path d="M56 6v12M65 2v20M74 6v12M83 3v18M92 7v10M101 2v20M110 5v14M119 1v22M128 6v12M137 4v16M146 2v20M155 6v12M164 4v16M173 7v10M182 2v20M191 4v16M200 7v10M209 3v18M218 5v14M227 8v8" stroke="#c6fff3" stroke-width="3"/></g>
+      <path d="M252 186V238" stroke="#fff" stroke-width="1.5"/><path d="M246 182H258V187L252 193 246 187Z" fill="#fff"/>
+    </g>
+    <text x="69" y="402" fill="#28576a" font-family="Arial,sans-serif" font-size="11" letter-spacing="2">LOCAL-FIRST EDITING / HUMAN IN CONTROL</text>
+  </g>
+</svg>

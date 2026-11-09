@@ -1,0 +1,6 @@
+[submodule "experiments/video_grounding_local/vendor/lighthouse"]
+	path = experiments/video_grounding_local/vendor/lighthouse
+	url = https://github.com/line/lighthouse.git
+[submodule "experiments/video_grounding_local/vendor/UniVTG"]
+	path = experiments/video_grounding_local/vendor/UniVTG
+	url = https://github.com/showlab/UniVTG.git
