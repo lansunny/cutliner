@@ -23,7 +23,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/workspace.jpg" alt="cutliner Agent 自动剪辑界面：大尺寸任务输入区、素材预览、候选池与真实行动记录" width="100%" />
+  <img src="docs/assets/workspace-agent.jpg" alt="cutliner Agent 自动剪辑界面：大尺寸任务输入区、素材预览、候选池与真实行动记录" width="100%" />
 </p>
 
 ## 体验
