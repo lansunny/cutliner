@@ -83,13 +83,11 @@ def load_run(folder):
     media = register_media(meta["file_path"])
     raw = read_json(folder / "candidates.json", [])
     candidates = [c for c in raw if isinstance(c, dict) and c.get("model_evidence")]
-    if not candidates:
-        return None
     review = read_json(folder / "local_search.json", {})
     verdicts = {}
     for attempt in review.get("attempts", []):
-        r = attempt.get("output_review") or attempt.get("local_review") or {}
-        verdicts[attempt["candidate_id"]] = r.get("verdict", "pending")
+        final, local = attempt.get("output_review", {}), attempt.get("local_review", {})
+        verdicts[attempt["candidate_id"]] = final.get("verdict") or ("source_pass" if local.get("verdict") == "pass" else local.get("verdict", "pending"))
     for c in candidates:
         c["review_verdict"] = verdicts.get(c["candidate_id"], "pending")
     state = read_json(folder / "retrieval_state.json", {})
@@ -97,7 +95,16 @@ def load_run(folder):
             "task": task.get("task", task), "candidates": candidates,
             "route": state.get("route", "visual"), "review_status": review.get("status", "not_reviewed"),
             "created": datetime.fromtimestamp(folder.stat().st_mtime).strftime("%m.%d %H:%M"),
-            "path": str(folder)}
+            "path": str(folder), "events": read_json(folder / "agent_events.json", []),
+            "delivery": None}
+    if review.get("status") == "satisfied":
+        exported = read_json(folder / "exports.json", {})
+        clips = exported.get("clips", [])
+        if clips and Path(clips[0]["file_path"]).is_file():
+            clip = clips[0]
+            item["delivery"] = {"media": register_media(clip["file_path"]), "reviewed": True,
+                                "candidate_id": clip["candidate_id"], "start": clip["source_start_seconds"],
+                                "end": clip["source_end_seconds"]}
     with LOCK:
         RUNS[item["id"]] = item
     return item
@@ -134,21 +141,41 @@ def update_job(key, **values):
         JOBS[key].update(values)
 
 
+def job_event(key, event):
+    """Stream bounded, factual action summaries; no model reasoning or credentials."""
+    with LOCK:
+        job = JOBS[key]
+        events = list(job.get("events", []))
+        safe = {k: v for k, v in event.items() if k in {
+            "stage_id", "kind", "message", "tool", "candidate_id", "candidate_index", "candidate_total", "verdict"}}
+        safe.update(seq=job.get("event_seq", 0) + 1, at=time.time())
+        events.append(safe)
+        job.update(events=events[-120:], event_seq=safe["seq"], stage_id=safe.get("stage_id", job.get("stage_id")))
+        if safe.get("message"):
+            job["stage"] = safe["message"]
+        if safe.get("candidate_id"):
+            job["candidate_progress"] = {"id": safe["candidate_id"], "current": safe.get("candidate_index"), "total": safe.get("candidate_total")}
+        folder = job.get("run_path")
+        if folder:
+            save_json(Path(folder) / "agent_events.json", job["events"])
+
+
 def spawn_job(kind, operation):
     if not BUSY.acquire(blocking=False):
         raise ValueError("另一个任务正在运行，请等待完成后再开始")
     key = uuid4().hex
     with LOCK:
-        JOBS[key] = {"id": key, "kind": kind, "status": "running", "stage": "准备任务", "started": time.time()}
+        JOBS[key] = {"id": key, "kind": kind, "status": "running", "stage": "准备任务", "started": time.time(), "events": []}
 
     def worker():
         try:
             result = operation(key)
-            update_job(key, status="complete", stage="任务完成", result=result)
+            update_job(key, status="complete", stage=result.get("message", "任务完成"), result=result)
         except Exception as error:
             # Never return repr(Settings), environment variables or API response bodies.
             message = str(error)
             message = re.sub(r"sk-[\w-]+", "[hidden]", message)[:900]
+            job_event(key, {"kind": "attention", "message": "任务停止，未完成自动交付"})
             update_job(key, status="failed", stage="任务停止", error=message)
         finally:
             BUSY.release()
@@ -164,7 +191,7 @@ async def retrieve(key, body):
     if not request or len(request) > 2000:
         raise ValueError("请填写 1–2000 字的检索需求")
     if body.get("cloud_planning"):
-        update_job(key, stage="正在解析需求")
+        job_event(key, {"stage_id": "planning", "message": "解析剪辑目标与声画条件，选择检索路径"})
         planner = VideoTaskPlanner(Settings.from_env())
         try:
             task = await planner.parse_task(request, meta)
@@ -182,16 +209,34 @@ async def retrieve(key, body):
     save_json(folder / "metadata.json", meta.model_dump(mode="json"))
     save_json(folder / "task.json", {"request": request, "task": task.model_dump(mode="json")})
     save_json(folder / "retrieval_state.json", {"status": "running", "route": route})
-    update_job(key, stage={"visual": "正在定位画面", "audio_visual": "正在分析声音与画面", "hybrid": "正在联合检索"}[route])
+    update_job(key, run_path=str(folder))
+    job_event(key, {"stage_id": "retrieval", "message": {"visual": "调用本地视觉定位器，检索画面候选", "audio_visual": "调用本地声画网络，定位有声事件", "hybrid": "联合视觉定位与声画网络，检索候选"}[route]})
     candidates, report = await NeuralVideoRetriever(top_k=12).retrieve(task, meta)
     save_json(folder / "candidates.json", [c.model_dump(mode="json") for c in candidates])
     save_json(folder / "retrieval.json", report)
     save_json(folder / "retrieval_state.json", {"status": "complete", "route": route, "candidate_count": len(candidates)})
     run = load_run(folder)
+    update_job(key, run=run)
+    job_event(key, {"stage_id": "retrieval", "message": f"已取得 {len(candidates)} 个候选片段", "kind": "result"})
     return {"run": run, "candidate_count": len(candidates), "message": f"已找到 {len(candidates)} 个候选片段，可预览或进一步审核"}
 
 
-async def review(key, body):
+async def auto_edit(key, body):
+    # Consent is checked again here so direct callers cannot trigger cloud work accidentally.
+    if body.get("allow_cloud") is not True:
+        raise ValueError("自动剪辑需要授权需求解析与画面复核")
+    update_job(key, media_id=body["media_id"], request=str(body.get("query", "")).strip())
+    found = await retrieve(key, {**body, "cloud_planning": True})
+    run = found["run"]
+    if not run["candidates"]:
+        save_json(Path(run["path"]) / "local_search.json", {"status": "no_match", "stop_after_first_pass": True, "attempts": []})
+        job_event(key, {"stage_id": "done", "kind": "no_match", "message": "未找到可供复核的候选，未生成成片"})
+        return {**found, "run": load_run(Path(run["path"])), "outcome": "no_match", "reviewed": False,
+                "message": "没有找到候选片段，可修改需求后重试"}
+    return await review(key, {"run_id": run["id"], "allow_cloud": True}, persist_in_run=True)
+
+
+async def review(key, body, *, persist_in_run=False):
     if body.get("allow_cloud") is not True:
         raise ValueError("Agent 复核会调用已配置的模型 API，需要先明确勾选授权")
     run = RUNS[body["run_id"]]
@@ -203,15 +248,24 @@ async def review(key, body):
                   for c in run["candidates"] if not selected or c["candidate_id"] == selected]
     if not candidates:
         raise ValueError("找不到待复核的候选片段")
-    folder = source / f"studio_review_{uuid4().hex[:8]}"
-    folder.mkdir()
-    update_job(key, stage="正在复核片段内容")
-    result = await deliver_first_match(task, meta, candidates, folder, use_legacy_action_verifier=False)
+    folder = source if persist_in_run else source / f"studio_review_{uuid4().hex[:8]}"
+    folder.mkdir(exist_ok=persist_in_run)
+    update_job(key, run_path=str(folder))
+    result = await deliver_first_match(task, meta, candidates, folder, use_legacy_action_verifier=False,
+                                       on_progress=lambda event: job_event(key, event))
     state = read_json(folder / "local_search.json", {})
     if result and result.valid and state.get("status") == "satisfied":
         clip = register_media(result.clips[0].file_path)
-        return {"media": clip, "reviewed": True, "message": "片段与成片审核通过", "path": str(folder)}
-    return {"reviewed": False, "message": "未获通过：" + state.get("status", "no_match"), "path": str(folder)}
+        delivered = result.clips[0]
+        return {"media": clip, "reviewed": True, "outcome": "delivered", "candidate_id": delivered.candidate_id,
+                "start": delivered.source_start_seconds, "end": delivered.source_end_seconds,
+                "run": load_run(source) if persist_in_run else None,
+                "message": "Agent 已交付一段通过双重复核的成片", "path": str(folder)}
+    status = state.get("status", "no_match")
+    message = "复核受阻，等待人工确认" if status == "review_blocked" else "候选未通过全部检查，未交付成片"
+    job_event(key, {"stage_id": "done", "kind": "attention" if status != "no_match" else "no_match", "message": message})
+    return {"reviewed": False, "outcome": "needs_attention" if status != "no_match" else "no_match",
+            "run": load_run(source) if persist_in_run else None, "message": message, "path": str(folder)}
 
 
 def export_trim(key, body):
@@ -231,7 +285,9 @@ def export_trim(key, body):
     save_json(folder / "export.json", report.model_dump(mode="json"))
     if not report.valid or not report.clips:
         raise ValueError("导出校验未通过：" + "；".join(report.errors))
-    return {"media": register_media(report.clips[0].file_path), "reviewed": False, "message": "已按当前范围导出，未经内容审核"}
+    return {"media": register_media(report.clips[0].file_path), "reviewed": False, "candidate_id": clip.candidate_id,
+            "start": report.clips[0].source_start_seconds, "end": report.clips[0].source_end_seconds,
+            "message": "已按当前范围导出，未经内容审核"}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -356,6 +412,14 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("media_id") not in MEDIA:
                     raise ValueError("请先导入素材")
                 return self.send_json(spawn_job("retrieval", lambda key: asyncio.run(retrieve(key, body))), 202)
+            if self.path == "/api/auto-edit":
+                if body.get("media_id") not in MEDIA:
+                    raise ValueError("请先导入素材")
+                if body.get("allow_cloud") is not True:
+                    raise ValueError("请先授权本次需求解析与云端画面复核")
+                if not 0 < len(str(body.get("query", "")).strip()) <= 2000:
+                    raise ValueError("请填写 1–2000 字的剪辑需求")
+                return self.send_json(spawn_job("auto_edit", lambda key: asyncio.run(auto_edit(key, body))), 202)
             if self.path in {"/api/review", "/api/export"}:
                 if body.get("run_id") not in RUNS:
                     raise ValueError("请先选择有效的检索结果")

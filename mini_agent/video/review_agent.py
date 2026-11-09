@@ -52,7 +52,8 @@ class OutputReviewReport(BaseModel):
 
 
 class VideoReviewAgent:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, *, on_progress=None):
+        self.on_progress = on_progress
         self.vision = VideoVisionAnalyzer(settings)
         self.client = AsyncOpenAI(
             api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url,
@@ -63,6 +64,11 @@ class VideoReviewAgent:
         self.max_rounds = 3
         self.max_frames = 12
         self.audio_event_tool = LocalAudioVisualEventTool.from_env()
+
+    def progress(self, message, *, tool=None):
+        # Publish executed actions, never the controller's private reasoning.
+        if self.on_progress is not None:
+            self.on_progress({"kind": "tool", "message": message, "tool": tool})
 
     async def close(self):
         await asyncio.gather(self.vision.close(), self.client.close())
@@ -115,6 +121,7 @@ class VideoReviewAgent:
         initial, check = [], None
         if (task.audio_condition_type == "event_activity" and source_metadata is not None
                 and source_review is not None and source_review.verdict == "pass"):
+            self.progress("核对成片音轨与源片段的一致性", tool="verify_export_audio")
             check = await asyncio.to_thread(verify_export_audio, source_metadata.file_path,
                                            clip.source_start_seconds, clip.expected_duration_seconds, clip.file_path)
             if not check["verified"]:
@@ -190,6 +197,8 @@ class VideoReviewAgent:
                 "shot_start_seconds": 0.0, "shot_end_seconds": duration,
             }) for f in frames]
             print(f"[补看工具] 观察片段内 {', '.join(f'{f.timestamp_seconds:.2f}' for f in frames)} 秒", flush=True)
+            self.progress("读取片段内 " + "、".join(f"{f.timestamp_seconds:.2f}s" for f in frames) + " 的画面取证",
+                          tool="inspect_frames")
             # No original selection rationale is supplied: collect fresh visual evidence.
             try:
                 result = await self.vision.analyze_batch(task, frames)
@@ -263,6 +272,7 @@ class VideoReviewAgent:
                     feedback = "声画检查窗必须位于当前片段内，且不超过10秒。"
                     continue
                 av_calls += 1
+                self.progress(f"调用本地声画模型，检查片段内 {lo:.2f}–{hi:.2f}s", tool="inspect_av_events")
                 result = await tool.inspect(file_path, start_seconds+lo, start_seconds+hi, required_classes)
                 av_evidence.append(result)
                 record({"tool": "inspect_av_events", "relative_interval": [lo, hi], "result": result})

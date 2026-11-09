@@ -1,0 +1,8 @@
+export type Media = { id: string; name: string; filename: string; category?: string; path: string; duration: number; width: number; height: number; fps: number; size: number; url: string; poster: string };
+export type Evidence = { model_name: string; modality: string; label: string; score: number };
+export type Candidate = { candidate_id: string; start_seconds: number; end_seconds: number; relevance_score: number; evidence_source: string; model_evidence: Evidence[]; boundary_note: string; review_verdict: string };
+export type AgentEvent = { seq: number; at: number; stage_id?: string; kind?: string; message: string; tool?: string; candidate_id?: string; candidate_index?: number; candidate_total?: number; verdict?: string };
+export type Delivery = { media: Media; reviewed: boolean; candidate_id?: string; start?: number; end?: number };
+export type Run = { id: string; media_id: string; request: string; task: { query?: string; visual_query_en?: string; audio_event_classes?: string[] }; candidates: Candidate[]; route: string; created: string; review_status: string; path: string; events?: AgentEvent[]; delivery?: Delivery | null };
+export type Job = { id: string; kind: string; status: string; stage: string; stage_id?: string; media_id?: string; request?: string; events?: AgentEvent[]; run?: Run; candidate_progress?: { id: string; current: number; total: number }; error?: string; started: number; result?: { run?: Run; media?: Media; reviewed?: boolean; outcome?: string; candidate_id?: string; start?: number; end?: number; message?: string; candidate_count?: number } };
+export type Bootstrap = { token: string; media: Media[]; runs: Run[]; events: { value: string; label: string }[]; active_job: Job | null };
