@@ -40,6 +40,9 @@ Thumbs.db
 **/cache/
 **/features/
 **/*_runs/
+**/runs/
+**/audits/
+**/benchmarks/
 **/outputs/
 **/checkpoints/
 **/wandb/
