@@ -1,0 +1,109 @@
+{
+  "scope": "Charades-STA strict complete positive subset; interval retrieval/refinement, not semantic absence or Agent/export success",
+  "queries": 2355,
+  "seeds": [
+    17,
+    29,
+    43
+  ],
+  "deployment_seed": 17,
+  "protocol_sha256": "cb9ed0227377105b624dc34cfc7c68c0abcfc2b8ce2fd50479e325e32fc76982",
+  "source_report_sha256": "92954ee59af5d77f39b751cf8cddaef3c0fd2bf586a2299bda914051bb08dc75",
+  "means": {
+    "coarse_top1": {
+      "iou": {
+        "mean": 0.202133633663664,
+        "seed_std": 0
+      },
+      "coverage_at_90": {
+        "mean": 0.13927813163481953,
+        "seed_std": 0
+      },
+      "event_coverage": {
+        "mean": 0.3148022261137898,
+        "seed_std": 0
+      },
+      "redundancy_seconds": {
+        "mean": 5.76732527732596,
+        "seed_std": 0
+      },
+      "boundary_mae_seconds": {
+        "mean": 8.944713278013557,
+        "seed_std": 0
+      }
+    },
+    "fine_top1": {
+      "iou": {
+        "mean": 0.29491697457176147,
+        "seed_std": 0.0025710699326604164
+      },
+      "coverage_at_90": {
+        "mean": 0.17140835102618543,
+        "seed_std": 0.004577766915441253
+      },
+      "event_coverage": {
+        "mean": 0.41131154882998205,
+        "seed_std": 0.0016516961224548145
+      },
+      "redundancy_seconds": {
+        "mean": 5.43412129783875,
+        "seed_std": 0.23690634686571077
+      },
+      "boundary_mae_seconds": {
+        "mean": 7.5067881192761545,
+        "seed_std": 0.09039767488200816
+      }
+    },
+    "frozen_quality_top3": {
+      "iou": {
+        "mean": 0.3209216709769691,
+        "seed_std": 0.001032389681962347
+      },
+      "coverage_at_90": {
+        "mean": 0.17452229299363056,
+        "seed_std": 0.007627568908878968
+      },
+      "event_coverage": {
+        "mean": 0.43558779250722557,
+        "seed_std": 0.003801814991823427
+      },
+      "redundancy_seconds": {
+        "mean": 5.117452967662551,
+        "seed_std": 0.08109865955017014
+      },
+      "boundary_mae_seconds": {
+        "mean": 6.940799568490154,
+        "seed_std": 0.06892228081396062
+      }
+    },
+    "trained_top3": {
+      "iou": {
+        "mean": 0.33625054774870655,
+        "seed_std": 0.004237430926142965
+      },
+      "coverage_at_90": {
+        "mean": 0.20736022646850674,
+        "seed_std": 0.002907662927696268
+      },
+      "event_coverage": {
+        "mean": 0.4737066489903401,
+        "seed_std": 0.005726476598248259
+      },
+      "redundancy_seconds": {
+        "mean": 5.419317173276569,
+        "seed_std": 0.19041885843938897
+      },
+      "boundary_mae_seconds": {
+        "mean": 6.631109474346263,
+        "seed_std": 0.032298479412245985
+      }
+    }
+  },
+  "limits": [
+    "positive interval queries only",
+    "not exhaustive semantic verification",
+    "not Agent/export evaluation",
+    "strict boundary subset, not the full original 3720-query test release",
+    "not a state-of-the-art benchmark claim"
+  ]
+}
