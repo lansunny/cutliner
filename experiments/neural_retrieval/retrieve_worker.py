@@ -28,11 +28,14 @@ def overlap(a, b):
     return max(0., min(a[1], b[1])-max(a[0], b[0]))
 
 
-def qd_proposals(request, device, info):
+def qd_proposals(request, device, info, runtime=None):
     sys.path.insert(0, str(VISUAL))
     import run_local as qd
-    model, config = qd.load_checkpoint(device)
-    encoder, _ = qd.clip.load(str(VISUAL/"weights/ViT-B-32.pt"), device=device, jit=False)
+    if runtime is None:
+        model, config = qd.load_checkpoint(device)
+        encoder, _ = qd.clip.load(str(VISUAL/"weights/ViT-B-32.pt"), device=device, jit=False)
+    else:
+        model, config, encoder = runtime
     encoder.eval().requires_grad_(False)
     duration, start = request["duration_seconds"], request["start_seconds"]
     tone_map = any(tag in info.get("pix_fmt", "") for tag in ("smpte2084", "arib-std-b67", "bt2020"))
@@ -40,9 +43,11 @@ def qd_proposals(request, device, info):
     with torch.inference_mode():
         features, cache, hit = qd.extract_features(Path(request["video"]), start, duration, encoder, device,
             float(config.clip_length), 4, tone_map, "none")
-        tokens = qd.clip.tokenize(request["visual_query_en"]).to(device)
-        text = F.normalize(encoder.encode_text(tokens)["last_hidden_state"].float(), dim=-1, eps=1e-5)
-        proposals, windows = qd.locate(model, features, text, (tokens != 0).float(), config, start, duration, device)
+        # Preserve the query instead of silently truncating to 32 tokens.
+        tokens = qd.clip.tokenize(request["visual_query_en"], max_valid_length=100000).to(device)
+        length = int(tokens[0].argmax()) + 1
+        text = F.normalize(encoder.encode_text(tokens)["last_hidden_state"][:, :length].float(), dim=-1, eps=1e-5)
+        proposals, windows = qd.locate(model, features, text, torch.ones(1, length, device=device), config, start, duration, device)
     result = []
     for item in proposals[:request["top_k"]]:
         lo, hi = max(start, item["start"]), min(start+duration, item["end"])
@@ -50,10 +55,12 @@ def qd_proposals(request, device, info):
             evidence = {"modality": "visual", "model_name": "QD-DETR/CLIP QVHighlights", "label": request["visual_query_en"],
                         "start_seconds": lo, "end_seconds": hi, "score": item["score"], "window_index": item["window"]}
             result.append({"start_seconds": lo, "end_seconds": hi, "score": item["score"], "model_evidence": [evidence]})
-    del model, encoder, features, text
-    gc.collect()
-    if device == "cuda":
-        torch.cuda.empty_cache()
+    del features, text
+    if runtime is None:
+        del model, encoder
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
     return result, {"feature_cache": cache, "feature_cache_hit": hit, "feature_windows": windows,
                     "sample_interval_seconds": float(config.clip_length), "tone_map": tone_map,
                     "limitations": "Independent-frame CLIP and learned localization; uncalibrated foreground/window scores; not verified event existence"}
@@ -137,17 +144,17 @@ def av_proposals(request, device, info):
                     "hdr_domain_unvalidated": hdr, "limitations": "Sounding-source events, not dialogue content, identity, or full-query certification"}
 
 
-def retrieve(request):
+def retrieve(request, *, visual_runtime=None, source_info=None):
     torch.set_num_threads(3)
     device = "cuda" if request.get("device", "auto") == "auto" and torch.cuda.is_available() else request.get("device", "cpu")
     if device == "auto":
         device = "cpu"
     if request["duration_seconds"] <= 0 or request["top_k"] < 1:
         raise ValueError("Invalid interval or candidate budget")
-    info = metadata(request["video"])
+    info = metadata(request["video"]) if source_info is None else source_info
     visual, av, details = [], [], {"device": device, "vlm_calls": 0, "chat_api_calls": 0}
     if request["route"] in ("visual", "hybrid"):
-        visual, details["visual"] = qd_proposals(request, device, info)
+        visual, details["visual"] = qd_proposals(request, device, info, visual_runtime)
     if request["route"] in ("audio_visual", "hybrid"):
         av, details["audio_visual"] = av_proposals(request, device, info)
     proposals = visual if request["route"] == "visual" else av

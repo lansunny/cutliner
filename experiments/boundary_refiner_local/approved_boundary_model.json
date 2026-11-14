@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "model_name": "Cutliner local boundary refiner v1",
+  "artifact_root": "E:/cutliner_data/charades_sta_v1",
+  "deployment_seed": 17,
+  "selection_rule": "Use the first reference seed, not the best held-out seed; this is not a three-model ensemble",
+  "local_checkpoint": "experiments/round_03/representative_pair_s17/best.pt",
+  "local_sha256": "3d20636e13c73a2f858078547ed107283a4c23a2c0479acb0a121a2aa337a4ac",
+  "ranker_checkpoint": "experiments/round_06/independent_s17/best.pt",
+  "ranker_sha256": "a89d84e9f6291e03c97a243e6c825deabfb7dec2262688e17990c1888d4a3893",
+  "clip_sha256": "40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af",
+  "frozen_protocol_sha256": "cb9ed0227377105b624dc34cfc7c68c0abcfc2b8ce2fd50479e325e32fc76982",
+  "feature_profile": "clip_b32_actual_pts_half_second_bins_bicubic_center224_v1",
+  "top_k": 3,
+  "context_seconds": 6.0,
+  "decoder_quantile": 0.3,
+  "source_sha256": {
+    "model.py": "5e7fca2df4be51ec410f15d17c9835b5a75e6565e0b0544b146cd6a8ca71b88b",
+    "interval_model.py": "187ccb7b946c6c9e0c223face56266a38c38cb0b8cd781657c09241dea8e2b2e",
+    "candidate_model.py": "6b485392fce48f1b49d0edf3b7c19ef64a45ce2f14641f0343b9001d6d526686"
+  },
+  "scope": "Pure visual local interval proposals; no NULL/absence decision, audio boundary model or semantic certification"
+}

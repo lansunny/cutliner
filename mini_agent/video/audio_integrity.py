@@ -6,12 +6,14 @@ from pathlib import Path
 import imageio_ffmpeg
 import numpy as np
 
+from mini_agent.video.job_control import run_process
+
 
 def decode_audio(path: Path, start: float, duration: float):
     command = [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-threads", "2",
                "-ss", str(start), "-i", str(path), "-t", str(duration), "-vn", "-map", "0:a:0",
                "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"]
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90,
+    result = run_process(command, timeout=90,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
         return None

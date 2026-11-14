@@ -1,0 +1,4 @@
+# Offline data acquisition and media validation; no training dependencies.
+requests>=2.31,<3
+numpy>=1.23,<2
+opencv-python-headless==4.10.0.84

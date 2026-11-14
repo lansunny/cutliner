@@ -32,6 +32,7 @@ async def main():
     parser.add_argument("--retrieve-only", action="store_true", help="Generate candidates without paid VLM/Agent review")
     parser.add_argument("--top-k", type=int, default=12, help="Candidate review budget, not the requested number of output clips")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
+    parser.add_argument("--no-boundary-refine", action="store_true", help="显式禁用纯视觉候选的局部边界网络")
     args = parser.parse_args()
     if args.top_k < 1:
         parser.error("--top-k must be positive")
@@ -87,7 +88,8 @@ async def main():
     print("检索阶段不调用Qwen视觉粗筛；只在候选产生后由Agent审核。")
     save_json(run_dir, "retrieval_state.json", {"status": "running", "route": route})
     try:
-        candidates, report = await NeuralVideoRetriever(top_k=args.top_k, device=args.device).retrieve(task, metadata)
+        candidates, report = await NeuralVideoRetriever(top_k=args.top_k, device=args.device,
+            refine_visual_boundaries=not args.no_boundary_refine).retrieve(task, metadata)
     except Exception as error:
         save_json(run_dir, "retrieval_state.json", {"status": "failed", "route": route, "reason": str(error)})
         raise
@@ -105,7 +107,8 @@ async def main():
     settings = Settings.from_env()
     if not settings.qwen_api_key:
         raise ValueError("模型候选已保存；候选复核需要DASHSCOPE_API_KEY，或使用--retrieve-only仅运行本地检索")
-    await deliver_first_match(task, metadata, candidates, run_dir, use_legacy_action_verifier=False)
+    await deliver_first_match(task, metadata, candidates, run_dir, use_legacy_action_verifier=False,
+                              allow_boundary_repair=True)
 
 
 if __name__ == "__main__":

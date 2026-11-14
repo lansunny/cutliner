@@ -8,6 +8,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from mini_agent.video.job_control import terminate_process
+
 
 PROJECT = Path(__file__).resolve().parents[2]
 EXPERIMENT = PROJECT/"experiments/av_grounding_local"
@@ -93,5 +95,4 @@ class LocalAudioVisualEventTool:
             return {**base, "status": "unavailable", "reason": "local_event_evidence_unavailable"}
         finally:
             if process is not None and process.returncode is None:
-                process.kill()
-                await process.wait()
+                await terminate_process(process)

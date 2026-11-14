@@ -5,6 +5,8 @@ from pathlib import Path
 import imageio_ffmpeg
 
 from mini_agent.video.clip_validator import ClipSelectionValidator
+from mini_agent.video.job_control import checkpoint, run_process
+from mini_agent.video.media_identity import file_signature
 from mini_agent.video.reader import VideoReader
 from mini_agent.video.schemas import (
     ClipCandidate,
@@ -80,6 +82,7 @@ class VideoClipExporter:
         errors: list[str] = []
 
         for index, clip in enumerate(checked.selected_clips, 1):
+            checkpoint()
             output_path = output_dir / f"clip_{index:02d}.mp4"
             print(f"正在导出第{index}段：{clip.start_seconds:.2f}～{clip.end_seconds:.2f}秒……")
             command = [
@@ -95,9 +98,8 @@ class VideoClipExporter:
                 "-c:a", "aac", "-movflags", "+faststart",
                 str(output_path),
             ]
-            process = subprocess.run(
+            process = run_process(
                 command,
-                capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -107,6 +109,7 @@ class VideoClipExporter:
             if process.returncode != 0:
                 raise RuntimeError("FFmpeg 导出失败：" + process.stderr[-2000:])
 
+            checkpoint()
             actual = self.reader.read_metadata(output_path)
             container_duration = self._container_duration(output_path)
             tolerance = max(0.01, 1.0 / actual.fps) + 0.005
@@ -121,6 +124,7 @@ class VideoClipExporter:
                 ExportedVideoClip(
                     candidate_id=clip.candidate_id,
                     file_path=output_path,
+                    file_signature=file_signature(output_path),
                     source_start_seconds=clip.start_seconds,
                     source_end_seconds=clip.end_seconds,
                     expected_duration_seconds=clip.duration_seconds,

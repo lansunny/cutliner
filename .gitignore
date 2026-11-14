@@ -23,6 +23,7 @@ Thumbs.db
 /runs/
 /video_runs/
 /evaluation_cases.json
+/review/
 *.mp4
 *.mkv
 *.mov

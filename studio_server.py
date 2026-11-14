@@ -29,15 +29,23 @@ from mini_agent.video.audio_visual_events import EVENT_NAMES
 from mini_agent.video.clip_exporter import VideoClipExporter
 from mini_agent.video.clip_validator import ClipSelectionValidator
 from mini_agent.video.local_search import deliver_first_match
+from mini_agent.video.media_identity import file_version_status, media_id
+from mini_agent.video.job_control import checkpoint, run_sync
 from mini_agent.video.neural_retriever import NeuralVideoRetriever, route_task
 from mini_agent.video.reader import VideoReader
 from mini_agent.video.schemas import ClipCandidate, ClipChoice, ClipSelection, VideoTaskSpec
+from mini_agent.video.studio_history import (
+    begin_operation, finish_operation, load_history, read_json, save_edit, save_json,
+    scoped_candidate, source_signature,
+)
 from mini_agent.video.task_planner import VideoTaskPlanner
+from studio_jobs import ACTIVE, RETRYABLE, StudioJobs
 
 ROOT = PROJECT_ROOT
 DATA = ROOT / "studio_data"
 DIST = ROOT / "frontend/dist"
 TOKEN = secrets.token_urlsafe(32)
+INSTANCE_ID = uuid4().hex
 MEDIA, RUNS, JOBS = {}, {}, {}
 LOCK = threading.RLock()
 BUSY = threading.Lock()
@@ -45,23 +53,11 @@ ALLOWED_ORIGINS = {"http://127.0.0.1:7861", "http://localhost:7861", "http://127
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
 
 
-def read_json(path, fallback=None):
-    try:
-        return json.loads(Path(path).read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return fallback
-
-
-def save_json(path, value):
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def register_media(path, label=None, category=None):
     path = Path(path).resolve()
     if not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
         raise ValueError("请选择存在的 MP4 / MOV / MKV / WebM 视频文件")
-    signature = f"{path}|{path.stat().st_size}|{path.stat().st_mtime_ns}"
-    key = hashlib.sha256(signature.encode()).hexdigest()[:20]
+    key = media_id(path)
     with LOCK:
         if key in MEDIA:
             return MEDIA[key]
@@ -76,35 +72,39 @@ def register_media(path, label=None, category=None):
     return item
 
 
+def registered_media(key):
+    item = MEDIA[key]
+    if media_id(item["path"]) != key:
+        raise ValueError("文件版本已改变，请刷新素材后再操作")
+    return item
+
+
 def load_run(folder):
     meta, task = read_json(folder / "metadata.json"), read_json(folder / "task.json", {})
     if not meta or not Path(meta["file_path"]).is_file():
         return None
     media = register_media(meta["file_path"])
     raw = read_json(folder / "candidates.json", [])
-    candidates = [c for c in raw if isinstance(c, dict) and c.get("model_evidence")]
-    review = read_json(folder / "local_search.json", {})
-    verdicts = {}
-    for attempt in review.get("attempts", []):
-        final, local = attempt.get("output_review", {}), attempt.get("local_review", {})
-        verdicts[attempt["candidate_id"]] = final.get("verdict") or ("source_pass" if local.get("verdict") == "pass" else local.get("verdict", "pending"))
-    for c in candidates:
-        c["review_verdict"] = verdicts.get(c["candidate_id"], "pending")
+    metadata = VideoReader().read_metadata(meta["file_path"])
+    candidates, delivery, review_status, events, updated, artifacts = load_history(folder, raw, metadata)
+    edits = read_json(folder / "edits.json", {})
+    active = max(edits, key=lambda key: edits[key]["updated_at"], default=None)
     state = read_json(folder / "retrieval_state.json", {})
+    if review_status == "not_reviewed" and state.get("status") in {"cancelled", "interrupted", "failed"}:
+        review_status = "operation_failed" if state["status"] == "failed" else state["status"]
     item = {"id": folder.name, "media_id": media["id"], "request": task.get("request", ""),
             "task": task.get("task", task), "candidates": candidates,
-            "route": state.get("route", "visual"), "review_status": review.get("status", "not_reviewed"),
-            "created": datetime.fromtimestamp(folder.stat().st_mtime).strftime("%m.%d %H:%M"),
-            "path": str(folder), "events": read_json(folder / "agent_events.json", []),
-            "delivery": None}
-    if review.get("status") == "satisfied":
-        exported = read_json(folder / "exports.json", {})
-        clips = exported.get("clips", [])
-        if clips and Path(clips[0]["file_path"]).is_file():
-            clip = clips[0]
-            item["delivery"] = {"media": register_media(clip["file_path"]), "reviewed": True,
-                                "candidate_id": clip["candidate_id"], "start": clip["source_start_seconds"],
-                                "end": clip["source_end_seconds"]}
+            "route": state.get("route", "visual"), "review_status": review_status,
+            "created": datetime.fromtimestamp((folder / "metadata.json").stat().st_mtime).strftime("%m.%d %H:%M"),
+            "updated_at": updated, "active_candidate_id": active,
+            "path": str(folder), "events": events,
+            "delivery": None, "deliveries": [], "latest_artifact_id": artifacts[0]["id"] if artifacts else None}
+    for artifact in artifacts:
+        public = {**{k: v for k, v in artifact.items() if k != "file_path"},
+                  "media": register_media(artifact["file_path"]) if artifact["available"] else None}
+        item["deliveries"].append(public)
+        if delivery is not None and artifact["id"] == delivery["id"]:
+            item["delivery"] = public
     with LOCK:
         RUNS[item["id"]] = item
     return item
@@ -137,8 +137,7 @@ def seed_library():
 
 
 def update_job(key, **values):
-    with LOCK:
-        JOBS[key].update(values)
+    JOB_MANAGER.update(key, **values)
 
 
 def job_event(key, event):
@@ -158,35 +157,123 @@ def job_event(key, event):
         folder = job.get("run_path")
         if folder:
             save_json(Path(folder) / "agent_events.json", job["events"])
+        JOB_MANAGER.update(key)
 
 
-def spawn_job(kind, operation):
-    if not BUSY.acquire(blocking=False):
-        raise ValueError("另一个任务正在运行，请等待完成后再开始")
-    key = uuid4().hex
-    with LOCK:
-        JOBS[key] = {"id": key, "kind": kind, "status": "running", "stage": "准备任务", "started": time.time(), "events": []}
+def terminal_job(record):
+    folder = Path(record["run_path"]) if record.get("run_path") else None
+    status = record["status"]
+    if folder and status != "complete":
+        finish_operation(folder, status=status)
+        for name in ("retrieval_state.json", "local_search.json"):
+            state = read_json(folder / name)
+            if state and state.get("status") == "running":
+                save_json(folder / name, {**state, "status": status})
+        messages = {"cancelled": "已停止；已发送的 API 请求可能仍计费", "interrupted": "服务重启，任务中断，未自动重跑",
+                    "failed": "本次任务未完成，已有文件和记录已保留"}
+        job_event(record["id"], {"kind": "attention", "message": messages.get(status, "任务未完成")})
+    restore_job(record)
 
-    def worker():
+
+def restore_job(record):
+    """Rebind references after restart without replaying actions or duplicating logs."""
+    signature = record.get("source_signature")
+    if signature:
         try:
-            result = operation(key)
-            update_job(key, status="complete", stage=result.get("message", "任务完成"), result=result)
-        except Exception as error:
-            # Never return repr(Settings), environment variables or API response bodies.
-            message = str(error)
-            message = re.sub(r"sk-[\w-]+", "[hidden]", message)[:900]
-            job_event(key, {"kind": "attention", "message": "任务停止，未完成自动交付"})
-            update_job(key, status="failed", stage="任务停止", error=message)
-        finally:
-            BUSY.release()
+            if source_signature(signature["path"]) != signature:
+                record["source_unavailable"] = True
+                return
+            register_media(signature["path"])
+            record.pop("source_unavailable", None)
+        except (OSError, ValueError):
+            record["source_unavailable"] = True
+            return
+    result = record.get("result", {})
+    output = result.get("media")
+    if output:
+        try:
+            restored = register_media(output["path"])
+            if restored["id"] != output["id"]:
+                raise ValueError("输出已改变")
+            result["media"] = restored
+        except (OSError, ValueError):
+            record["output_unavailable"] = True
+            result.pop("media", None)
+            result["reviewed"] = False
+            result["message"] = "历史成片已改变或不可用，任务记录已保留"
+    folder = Path(record["run_path"]) if record.get("run_path") else None
+    source = record.get("root_run_path") or (str(folder) if folder and (folder / "metadata.json").is_file() else None)
+    if source:
+        run = load_run(Path(source))
+        if run:
+            record["run"] = run
+            if record.get("result") is not None:
+                record["result"]["run"] = run
+                output = record["result"].get("media")
+                artifact = next((item for item in run.get("deliveries", []) if output and item.get("media", {}) and item["media"]["id"] == output["id"]), None)
+                if artifact is not None:
+                    record["result"]["reviewed"] = artifact["reviewed"]
 
-    threading.Thread(target=worker, daemon=True, name=f"studio-{kind}").start()
-    return {"job_id": key}
+
+JOB_MANAGER = StudioJobs(DATA / "jobs", JOBS, LOCK, BUSY, on_terminal=terminal_job, on_restore=restore_job)
+
+
+def spawn_job(kind, body, *, retry_of=None, frozen_ranges=None):
+    fields = {"retrieval": {"media_id", "query", "route", "visual_query_en", "events", "cloud_planning"},
+              "auto_edit": {"media_id", "query"},
+              "review": {"run_id", "candidate_id", "start", "end"},
+              "export": {"run_id", "candidate_id", "start", "end"}}
+    if kind not in fields:
+        raise ValueError("不支持的任务类型")
+    request = {name: body[name] for name in fields[kind] if name in body}
+    requires_cloud = kind in {"auto_edit", "review"} or bool(request.get("cloud_planning"))
+    if requires_cloud and body.get("allow_cloud") is not True:
+        raise ValueError("请明确授权本次云端解析或画面复核")
+    if kind in {"retrieval", "auto_edit"}:
+        media = MEDIA[request["media_id"]]
+        if not 0 < len(str(request.get("query", "")).strip()) <= 2000:
+            raise ValueError("请填写 1–2000 字的剪辑需求")
+        scope = {"media_name": media["name"], "query": str(request["query"]).strip()}
+    else:
+        run = RUNS[request["run_id"]]
+        media = MEDIA[run["media_id"]]
+        metadata = VideoReader().read_metadata(media["path"])
+        candidates = operation_candidates(run, {**request, "_frozen_ranges": frozen_ranges}, metadata)
+        if kind == "export" and not request.get("candidate_id"):
+            raise ValueError("请选择要导出的片段")
+        scope = {"media_name": media["name"], "query": run["request"],
+                 "ranges": [{"candidate_id": c.candidate_id, "start": c.start_seconds, "end": c.end_seconds} for c in candidates]}
+    actual = {**request, "allow_cloud": body.get("allow_cloud") is True}
+    if kind in {"review", "export"}:
+        actual["_frozen_ranges"] = scope["ranges"]
+
+    async def operation(key):
+        if kind == "export":
+            return await run_sync(export_trim, key, actual)
+        return await {"retrieval": retrieve, "auto_edit": auto_edit, "review": review}[kind](key, actual)
+
+    return JOB_MANAGER.submit(kind, operation, request, source_signature=source_signature(media["path"]),
+                              scope=scope, requires_cloud=requires_cloud, retry_of=retry_of)
+
+
+def retry_job(key, body):
+    with LOCK:
+        record = dict(JOBS[key])
+    if record.get("status") not in RETRYABLE or not record.get("input"):
+        raise ValueError("该任务当前不能重试")
+    signature = record.get("source_signature")
+    if not signature or source_signature(signature["path"]) != signature:
+        raise ValueError("原素材已改变或不可用，请重新导入与检索")
+    register_media(signature["path"])
+    request = {**record["input"], "allow_cloud": body.get("allow_cloud") is True}
+    if record.get("root_run_path"):
+        load_run(Path(record["root_run_path"]))
+    return spawn_job(record["kind"], request, retry_of=key, frozen_ranges=record.get("scope", {}).get("ranges"))
 
 
 async def retrieve(key, body):
     media = MEDIA[body["media_id"]]
-    meta = await asyncio.to_thread(VideoReader().read_metadata, media["path"])
+    meta = await run_sync(VideoReader().read_metadata, media["path"])
     request = str(body.get("query", "")).strip()
     if not request or len(request) > 2000:
         raise ValueError("请填写 1–2000 字的检索需求")
@@ -209,15 +296,17 @@ async def retrieve(key, body):
     save_json(folder / "metadata.json", meta.model_dump(mode="json"))
     save_json(folder / "task.json", {"request": request, "task": task.model_dump(mode="json")})
     save_json(folder / "retrieval_state.json", {"status": "running", "route": route})
-    update_job(key, run_path=str(folder))
+    update_job(key, run_path=str(folder), root_run_path=str(folder), media_id=media["id"], request=request)
     job_event(key, {"stage_id": "retrieval", "message": {"visual": "调用本地视觉定位器，检索画面候选", "audio_visual": "调用本地声画网络，定位有声事件", "hybrid": "联合视觉定位与声画网络，检索候选"}[route]})
-    candidates, report = await NeuralVideoRetriever(top_k=12).retrieve(task, meta)
+    candidates, report = await NeuralVideoRetriever(top_k=12).retrieve(
+        task, meta, on_progress=lambda event: job_event(key, event))
     save_json(folder / "candidates.json", [c.model_dump(mode="json") for c in candidates])
     save_json(folder / "retrieval.json", report)
     save_json(folder / "retrieval_state.json", {"status": "complete", "route": route, "candidate_count": len(candidates)})
     run = load_run(folder)
     update_job(key, run=run)
-    job_event(key, {"stage_id": "retrieval", "message": f"已取得 {len(candidates)} 个候选片段", "kind": "result"})
+    stage_id = "refinement" if report.get("details", {}).get("boundary_refinement", {}).get("status") == "ok" else "retrieval"
+    job_event(key, {"stage_id": stage_id, "message": f"已取得 {len(candidates)} 个候选片段", "kind": "result"})
     return {"run": run, "candidate_count": len(candidates), "message": f"已找到 {len(candidates)} 个候选片段，可预览或进一步审核"}
 
 
@@ -236,6 +325,27 @@ async def auto_edit(key, body):
     return await review(key, {"run_id": run["id"], "allow_cloud": True}, persist_in_run=True)
 
 
+def operation_candidates(run, body, metadata):
+    selected = body.get("candidate_id")
+    if ("start" in body or "end" in body) and not selected:
+        raise ValueError("调整范围时需要指定候选片段")
+    if ("start" in body or "end" in body) and (body.get("start") is None or body.get("end") is None):
+        raise ValueError("请填写有效的入点和出点")
+    frozen = body.get("_frozen_ranges")
+    ranges = {r["candidate_id"]: r for r in frozen} if frozen is not None else None
+    candidates = [scoped_candidate(c, metadata,
+                    ranges[c["candidate_id"]]["start"] if ranges is not None else body.get("start"),
+                    ranges[c["candidate_id"]]["end"] if ranges is not None else body.get("end"))
+                  for c in run["candidates"] if (not selected or c["candidate_id"] == selected)
+                  and (ranges is None or c["candidate_id"] in ranges)]
+    if not candidates:
+        raise ValueError("找不到待处理的候选片段")
+    signature = read_json(Path(run["path"]) / "retrieval.json", {}).get("source_signature")
+    if signature and signature != source_signature(metadata.file_path):
+        raise ValueError("源视频已改变，请重新检索后再剪辑")
+    return candidates
+
+
 async def review(key, body, *, persist_in_run=False):
     if body.get("allow_cloud") is not True:
         raise ValueError("Agent 复核会调用已配置的模型 API，需要先明确勾选授权")
@@ -243,50 +353,75 @@ async def review(key, body, *, persist_in_run=False):
     source = Path(run["path"])
     meta = VideoReader().read_metadata(MEDIA[run["media_id"]]["path"])
     task = VideoTaskSpec.model_validate(run["task"])
-    selected = body.get("candidate_id")
-    candidates = [ClipCandidate.model_validate({k: v for k, v in c.items() if k != "review_verdict"})
-                  for c in run["candidates"] if not selected or c["candidate_id"] == selected]
-    if not candidates:
-        raise ValueError("找不到待复核的候选片段")
-    folder = source if persist_in_run else source / f"studio_review_{uuid4().hex[:8]}"
-    folder.mkdir(exist_ok=persist_in_run)
-    update_job(key, run_path=str(folder))
-    result = await deliver_first_match(task, meta, candidates, folder, use_legacy_action_verifier=False,
-                                       on_progress=lambda event: job_event(key, event))
+    candidates = operation_candidates(run, body, meta)
+    if body.get("candidate_id") and "start" in body:
+        save_edit(source, candidates[0])
+    folder = source if persist_in_run else begin_operation(source, "review", key, candidates, meta.file_path)
+    update_job(key, run_path=str(folder), root_run_path=str(source), run=load_run(source), run_id=run["id"],
+               media_id=run["media_id"], request=task.query)
+    expected_source = source_signature(meta.file_path)
+    try:
+        result = await deliver_first_match(task, meta, candidates, folder, use_legacy_action_verifier=False,
+                                           allow_boundary_repair=persist_in_run,
+                                           on_progress=lambda event: job_event(key, event))
+        if source_signature(meta.file_path) != expected_source:
+            raise ValueError("源视频在复核过程中发生变化，请重新检索")
+        finish_operation(folder)
+    except BaseException:
+        finish_operation(folder, status="cancelled" if JOBS[key].get("status") == "cancelling" else "failed")
+        raise
     state = read_json(folder / "local_search.json", {})
     if result and result.valid and state.get("status") == "satisfied":
         clip = register_media(result.clips[0].file_path)
         delivered = result.clips[0]
         return {"media": clip, "reviewed": True, "outcome": "delivered", "candidate_id": delivered.candidate_id,
                 "start": delivered.source_start_seconds, "end": delivered.source_end_seconds,
-                "run": load_run(source) if persist_in_run else None,
+                "run": load_run(source),
                 "message": "Agent 已交付一段通过双重复核的成片", "path": str(folder)}
     status = state.get("status", "no_match")
     message = "复核受阻，等待人工确认" if status == "review_blocked" else "候选未通过全部检查，未交付成片"
     job_event(key, {"stage_id": "done", "kind": "attention" if status != "no_match" else "no_match", "message": message})
     return {"reviewed": False, "outcome": "needs_attention" if status != "no_match" else "no_match",
-            "run": load_run(source) if persist_in_run else None, "message": message, "path": str(folder)}
+            "run": load_run(source), "message": message, "path": str(folder)}
 
 
 def export_trim(key, body):
+    checkpoint()
     run = RUNS[body["run_id"]]
-    candidate = next(c for c in run["candidates"] if c["candidate_id"] == body["candidate_id"])
-    raw = {k: v for k, v in candidate.items() if k != "review_verdict"}
-    raw.update(start_seconds=float(body["start"]), end_seconds=float(body["end"]), shot_start_seconds=None, shot_end_seconds=None)
-    clip = ClipCandidate.model_validate(raw)
     meta = VideoReader().read_metadata(MEDIA[run["media_id"]]["path"])
+    if not body.get("candidate_id"):
+        raise ValueError("请选择要导出的片段")
+    clip = operation_candidates(run, body, meta)[0]
     task = VideoTaskSpec.model_validate(run["task"])
     selection = ClipSelection(choices=[ClipChoice(candidate_id=clip.candidate_id, reason="用户在时间线中手动确认裁剪范围；未进行语义复核")], summary="手动导出")
     checked = ClipSelectionValidator().validate(task, meta, [clip], selection)
-    update_job(key, stage="正在导出成片")
-    folder = DATA / "exports" / uuid4().hex
-    folder.parent.mkdir(parents=True, exist_ok=True)
-    report = VideoClipExporter().export(task, meta, checked, folder)
-    save_json(folder / "export.json", report.model_dump(mode="json"))
-    if not report.valid or not report.clips:
-        raise ValueError("导出校验未通过：" + "；".join(report.errors))
+    if not checked.valid:
+        raise ValueError("当前范围不能导出：" + "；".join(checked.errors))
+    source = Path(run["path"])
+    save_edit(source, clip)
+    folder = begin_operation(source, "export", key, [clip], meta.file_path)
+    update_job(key, stage="正在导出当前范围", stage_id="export", run_path=str(folder), root_run_path=str(source),
+               run_id=run["id"], media_id=run["media_id"], request=task.query)
+    job_event(key, {"stage_id": "export", "message": "按当前入点和出点导出；不进行内容复核"})
+    expected_source = source_signature(meta.file_path)
+    try:
+        report = VideoClipExporter().export(task, meta, checked, folder / "clips")
+        checkpoint()
+        save_json(folder / "exports.json", report.model_dump(mode="json"))
+        if not report.valid or not report.clips:
+            raise ValueError("导出校验未通过：" + "；".join(report.errors))
+        if any(file_version_status(clip.file_path, clip.file_signature) != "current" for clip in report.clips):
+            raise ValueError("导出文件版本已改变，不能标记为本次导出")
+        if source_signature(meta.file_path) != expected_source:
+            raise ValueError("源视频在导出过程中发生变化，请重新检索")
+        finish_operation(folder)
+    except BaseException:
+        finish_operation(folder, status="cancelled" if JOBS[key].get("status") == "cancelling" else "failed")
+        raise
+    job_event(key, {"stage_id": "done", "kind": "result", "message": "手动导出完成，未经内容复核"})
     return {"media": register_media(report.clips[0].file_path), "reviewed": False, "candidate_id": clip.candidate_id,
             "start": report.clips[0].source_start_seconds, "end": report.clips[0].source_end_seconds,
+            "run": load_run(source),
             "message": "已按当前范围导出，未经内容审核"}
 
 
@@ -319,18 +454,26 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/bootstrap":
                 with LOCK:
-                    runs = list(RUNS.values())
+                    runs = sorted(RUNS.values(), key=lambda run: run.get("updated_at", 0), reverse=True)
                     media = list(MEDIA.values())
+                    active_job = next((JOB_MANAGER.public(j["id"]) for j in JOBS.values() if j["status"] in ACTIVE), None)
+                    latest_job = JOB_MANAGER.public(max(JOBS.values(), key=lambda j: j.get("started", 0))["id"]) if JOBS else None
                 return self.send_json({"token": TOKEN, "media": media, "runs": runs,
+                    "instance_id": INSTANCE_ID,
                     "events": [{"value": k, "label": v} for k, v in EVENT_NAMES.items()],
-                    "active_job": next((j for j in JOBS.values() if j["status"] == "running"), None)})
+                    "active_job": active_job, "latest_job": latest_job})
             if len(parts) == 3 and parts[:2] == ["api", "jobs"]:
                 with LOCK:
-                    return self.send_json(dict(JOBS[parts[2]]))
+                    return self.send_json({**JOB_MANAGER.public(parts[2]), "instance_id": INSTANCE_ID})
+            if len(parts) == 3 and parts[:2] == ["api", "runs"]:
+                run = load_run(Path(RUNS[parts[2]]["path"]))
+                if run is None:
+                    return self.send_json({"error": "原素材不可用，请检查本地文件"}, 404)
+                return self.send_json(run)
             if len(parts) == 3 and parts[:2] == ["api", "media"]:
-                return self.send_file(Path(MEDIA[parts[2]]["path"]))
+                return self.send_file(Path(registered_media(parts[2])["path"]))
             if len(parts) == 3 and parts[:2] == ["api", "thumb"]:
-                media = MEDIA[parts[2]]
+                media = registered_media(parts[2])
                 at = float(parse_qs(parsed.query).get("t", ["1"])[0])
                 if not math.isfinite(at):
                     raise ValueError("Invalid time")
@@ -352,7 +495,7 @@ class Handler(BaseHTTPRequestHandler):
                         capture.release()
                 return self.send_file(target)
             if len(parts) == 3 and parts[:2] == ["api", "waveform"]:
-                media = MEDIA[parts[2]]
+                media = registered_media(parts[2])
                 folder = DATA / "waveforms"
                 folder.mkdir(parents=True, exist_ok=True)
                 target = folder / (media["id"] + ".json")
@@ -406,12 +549,20 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < length <= 32768:
                 raise ValueError("请求内容无效")
             body = json.loads(self.rfile.read(length))
+            if not isinstance(body, dict):
+                raise ValueError("请求内容必须为对象")
+            parts = urlparse(self.path).path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "jobs"]:
+                if parts[3] == "cancel":
+                    return self.send_json(JOB_MANAGER.cancel(parts[2]))
+                if parts[3] == "retry":
+                    return self.send_json(retry_job(parts[2], body), 202)
             if self.path == "/api/import/path":
                 return self.send_json({"media": register_media(str(body.get("path", "")).strip().strip('"'))})
             if self.path == "/api/retrieve":
                 if body.get("media_id") not in MEDIA:
                     raise ValueError("请先导入素材")
-                return self.send_json(spawn_job("retrieval", lambda key: asyncio.run(retrieve(key, body))), 202)
+                return self.send_json(spawn_job("retrieval", body), 202)
             if self.path == "/api/auto-edit":
                 if body.get("media_id") not in MEDIA:
                     raise ValueError("请先导入素材")
@@ -419,12 +570,18 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("请先授权本次需求解析与云端画面复核")
                 if not 0 < len(str(body.get("query", "")).strip()) <= 2000:
                     raise ValueError("请填写 1–2000 字的剪辑需求")
-                return self.send_json(spawn_job("auto_edit", lambda key: asyncio.run(auto_edit(key, body))), 202)
+                return self.send_json(spawn_job("auto_edit", body), 202)
             if self.path in {"/api/review", "/api/export"}:
                 if body.get("run_id") not in RUNS:
                     raise ValueError("请先选择有效的检索结果")
-                op = (lambda key: asyncio.run(review(key, body))) if self.path.endswith("review") else (lambda key: export_trim(key, body))
-                return self.send_json(spawn_job("review" if self.path.endswith("review") else "export", op), 202)
+                if self.path == "/api/review" and body.get("allow_cloud") is not True:
+                    raise ValueError("请先授权当前范围的云端复核")
+                run = RUNS[body["run_id"]]
+                meta = VideoReader().read_metadata(MEDIA[run["media_id"]]["path"])
+                operation_candidates(run, body, meta)
+                if self.path == "/api/export" and not body.get("candidate_id"):
+                    raise ValueError("请选择要导出的片段")
+                return self.send_json(spawn_job("review" if self.path.endswith("review") else "export", body), 202)
             self.send_json({"error": "Not found"}, 404)
         except (ValueError, OSError, KeyError) as error:
             self.send_json({"error": str(error)[:500]}, 400)
@@ -479,6 +636,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     DATA.mkdir(exist_ok=True)
     seed_library()
+    JOB_MANAGER.restore()
     server = ThreadingHTTPServer(("127.0.0.1", 7861), Handler)
     server.daemon_threads = True
     print("cutliner: http://127.0.0.1:7861", flush=True)
@@ -486,4 +644,7 @@ if __name__ == "__main__":
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        pass
+    finally:
         server.server_close()
+        JOB_MANAGER.close()

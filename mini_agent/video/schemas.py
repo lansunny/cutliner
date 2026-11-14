@@ -107,6 +107,41 @@ class ModelIntervalEvidence(VideoModel):
     window_index: int | None = None
 
 
+class BoundaryRefinement(VideoModel):
+    model_name: str
+    feature_profile: str
+    frozen_protocol_sha256: str
+    deployment_seed: int
+    coarse_start_seconds: float = Field(ge=0, allow_inf_nan=False)
+    coarse_end_seconds: float = Field(gt=0, allow_inf_nan=False)
+    observation_start_seconds: float = Field(ge=0, allow_inf_nan=False)
+    observation_end_seconds: float = Field(gt=0, allow_inf_nan=False)
+    proposed_start_seconds: float = Field(ge=0, allow_inf_nan=False)
+    proposed_end_seconds: float = Field(gt=0, allow_inf_nan=False)
+    coarse_rank: int = Field(ge=1, le=3)
+    selection_logit: float = Field(allow_inf_nan=False)
+    observed_frames: int = Field(ge=2)
+
+
+class BoundaryObservation(VideoModel):
+    frame_index: int = Field(ge=0)
+    source_timestamp_seconds: float = Field(ge=0, allow_inf_nan=False)
+
+
+class AgentBoundaryRepair(VideoModel):
+    original_start_seconds: float = Field(ge=0, allow_inf_nan=False)
+    original_end_seconds: float = Field(gt=0, allow_inf_nan=False)
+    proposed_start_seconds: float = Field(ge=0, allow_inf_nan=False)
+    proposed_end_seconds: float = Field(gt=0, allow_inf_nan=False)
+    context_start_seconds: float = Field(ge=0, allow_inf_nan=False)
+    context_end_seconds: float = Field(gt=0, allow_inf_nan=False)
+    start_frame_index: int = Field(ge=0)
+    end_frame_index: int = Field(ge=0)
+    observed_frames: list[BoundaryObservation] = Field(min_length=2, max_length=12)
+    reason: str = Field(min_length=1, max_length=500)
+    scope: Literal["agent_observed_frame_proposal_v1"] = "agent_observed_frame_proposal_v1"
+
+
 class ClipCandidate(VideoModel):
     candidate_id: str = Field(min_length=1)
     start_seconds: float = Field(ge=0.0, allow_inf_nan=False)
@@ -120,6 +155,9 @@ class ClipCandidate(VideoModel):
     evidence_source: Literal["visual_observations", "qd_detr", "av_event", "hybrid_neural"] = "visual_observations"
     model_evidence: list[ModelIntervalEvidence] = Field(default_factory=list)
     retrieval_notes: list[str] = Field(default_factory=list)
+    review_priority: int | None = Field(default=None, ge=1)
+    boundary_refinement: BoundaryRefinement | None = None
+    agent_boundary_repair: AgentBoundaryRepair | None = None
     relevance_score: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
     sharpness_score: float | None = Field(default=None, ge=0.0)
     boundary_note: str = "时间范围由匹配采样帧附近的固定窗口估计，连续内容尚未验证"
@@ -158,9 +196,16 @@ class ClipValidationReport(VideoModel):
     total_duration_seconds: float = Field(ge=0.0, allow_inf_nan=False)
     selected_clips: list[SelectedClip] = Field(default_factory=list)
 
+class FileSignature(VideoModel):
+    path: str
+    size: int = Field(ge=0)
+    mtime_ns: int = Field(ge=0)
+
+
 class ExportedVideoClip(VideoModel):
     candidate_id: str = Field(min_length=1)
     file_path: Path
+    file_signature: FileSignature | None = None
     source_start_seconds: float = Field(ge=0.0)
     source_end_seconds: float = Field(gt=0.0)
     expected_duration_seconds: float = Field(gt=0.0)

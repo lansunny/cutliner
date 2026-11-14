@@ -3,6 +3,7 @@ import math
 import cv2
 
 from mini_agent.video.reader import VideoReader
+from mini_agent.video.job_control import checkpoint
 from mini_agent.video.schemas import FrameSamplePoint, ShotSegment, VideoFrame, VideoMetadata
 
 class FrameExtractor:
@@ -43,6 +44,7 @@ class FrameExtractor:
                     "无法打开视频文件"
                 )
             for frame_index in range(0,metadata.frame_count,step_frames):
+                checkpoint()
                 capture.set(cv2.CAP_PROP_POS_FRAMES,frame_index)
                 success,image=capture.read()
                 if not success:
@@ -97,6 +99,7 @@ class FrameExtractor:
             if not capture.isOpened():
                 raise ValueError("无法读取原视频代表帧")
             for sample in sorted(samples, key=lambda item: item.timestamp_seconds):
+                checkpoint()
                 shot = shot_map[sample.shot_id]
                 capture.set(cv2.CAP_PROP_POS_MSEC, sample.timestamp_seconds * 1000)
                 success, image = capture.read()
