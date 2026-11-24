@@ -23,6 +23,7 @@ from public_zip import ROOT
 
 sys.path.insert(0, str(ROOT.parents[1]))
 from mini_agent.video.audio_visual_events import canonical_events
+from mini_agent.video.frame_geometry import FIT_PROFILE, square_geometry
 
 
 def source_duration(video):
@@ -36,12 +37,13 @@ def source_duration(video):
     return value
 
 
-def decode_window(video, start):
-    if start == 0:
+def decode_window(video, start, *, frame_view="center"):
+    if start == 0 and frame_view == "center":
         return decode_media(video)
     executable = imageio_ffmpeg.get_ffmpeg_exe()
     base = [executable, "-nostdin", "-v", "error", "-threads", "2", "-ss", str(start), "-i", str(video), "-t", "10"]
-    frames = subprocess.run(base+["-an", "-vf", "fps=1,scale=224:224:flags=bicubic:force_original_aspect_ratio=increase,crop=224:224",
+    geometry, padding = square_geometry(frame_view, bicubic=True)
+    frames = subprocess.run(base+["-an", "-vf", "fps=1,"+geometry+padding,
                                   "-threads", "2", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=90).stdout
     audio = subprocess.run(base+["-vn", "-map", "0:a:0", "-ac", "1", "-ar", "32000", "-f", "f32le", "pipe:1"],
@@ -53,7 +55,9 @@ def decode_window(video, start):
 
 
 class EventRuntime:
-    def __init__(self, folder, device):
+    def __init__(self, folder, device, *, frame_view="fit"):
+        square_geometry(frame_view)
+        self.frame_view = frame_view
         self.folder, self.device = Path(folder), device
         frozen = validate_frozen(self.folder)
         report = json.loads((self.folder/"heldout_results.json").read_text(encoding="utf-8"))
@@ -79,14 +83,42 @@ class EventRuntime:
             calibrations.append(calibration)
         self.model = EventGrounder(self.mode, *calibrations, checkpoint["alpha"])
         self.model.load_state_dict(state)
-        self.model.eval().requires_grad_(False).to(device)
         self.threshold = frozen["thresholds"][filename.removesuffix(".pt")]
+        self.model_profile = f"{frame_view}_original"
+        if frame_view == "fit":
+            self._load_fit_adapter(frozen["checkpoints"][filename])
+        self.model.eval().requires_grad_(False).to(device)
         with np.load(DATA/"native_classifiers.npz", allow_pickle=False) as data:
             self.classes = data["classes"].tolist()
             self.visual_text = torch.from_numpy(data["visual_text"].copy()).to(device)
             self.audio_weight = torch.from_numpy(data["audio_weight"].copy()).to(device)
             self.audio_bias = torch.from_numpy(data["audio_bias"].copy()).to(device)
         self.encoder = FrozenEventFeatures(device)
+
+    def _load_fit_adapter(self, base_sha):
+        manifest_path = ROOT / "approved_full_frame_event_model.json"
+        if not manifest_path.is_file():
+            return
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest["base_checkpoint_sha256"] != base_sha or manifest["frame_profile"] != FIT_PROFILE:
+            return  # A separately configured base checkpoint needs its own adaptation.
+        folder = ROOT / manifest["run_dir"]
+        if not folder.exists():
+            print("Full-frame AV adapter not installed; using the original head on full frames", flush=True)
+            return
+        path, report = folder / "adapted.pt", folder / "summary.json"
+        for file, name in ((path, "checkpoint_sha256"), (report, "report_sha256")):
+            if hashlib.sha256(file.read_bytes()).hexdigest() != manifest[name]:
+                raise ValueError(f"Full-frame AV adapter asset differs: {file.name}")
+        adapter = torch.load(path, map_location="cpu", weights_only=True)
+        split_sha = hashlib.sha256((DATA / "split_plan.json").read_bytes()).hexdigest()
+        if (adapter["base_checkpoint_sha256"] != base_sha or adapter["frame_profile"] != FIT_PROFILE
+                or adapter["mode"] != self.mode or adapter["split_sha256"] != split_sha
+                or not 0 < adapter["threshold"] < 1):
+            raise ValueError("Full-frame AV adapter is incompatible with the verified base")
+        self.model.load_state_dict(adapter["state_dict"])
+        self.threshold = adapter["threshold"]
+        self.model_profile = "fit_adapted_v1"
 
     @torch.inference_mode()
     def probabilities(self, decoded):
@@ -104,7 +136,7 @@ class EventRuntime:
         if not 0 <= start < end <= duration+.1 or end-start > 10.000001:
             raise ValueError("Inspect a valid local interval of at most ten seconds")
         context_start = max(0., min(max(0., duration-10), (start+end)/2-5))
-        probability = self.probabilities(decode_window(video, context_start))
+        probability = self.probabilities(decode_window(video, context_start, frame_view=self.frame_view))
         events = []
         for name in classes:
             values = probability[:, self.classes.index(name)]
@@ -119,6 +151,7 @@ class EventRuntime:
                 "requested_end_seconds": end, "context_start_seconds": context_start,
                 "context_end_seconds": min(duration, context_start+10), "events": events,
                 "event_classes": classes, "threshold": self.threshold, "model_mode": self.mode, "model_seed": self.seed,
+                "frame_view": self.frame_view, "model_profile": self.model_profile,
                 "timestamp_resolution_seconds": 1., "audio_context_seconds_per_bin": 2.,
                 "certifies_full_query": False, "absence_not_proven": True,
                 "scope": "有声且可见的28类事件活动；不识别台词内容、具体身份、否定条件或任意动作过程"}

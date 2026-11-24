@@ -142,7 +142,7 @@ def run(args):
         replays = []
         if args.replay_sources:
             save(status, {"status": "running", "phase": "raw_media_replay", "dev_sources_complete": len(dataset)})
-            runtime = EventRuntime(folder, args.device)
+            runtime = EventRuntime(folder, args.device, frame_view="center")
             if runtime.seed != manifest["deployment_seed"] or runtime.mode != joint or runtime.threshold != threshold:
                 raise ValueError("Production runtime differs from the evaluated head")
             for index in sorted(range(len(dev_ids)), key=lambda i: hashlib.sha256(("av-dev-replay-v1:" + dev_ids[i]).encode()).hexdigest())[:args.replay_sources]:

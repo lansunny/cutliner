@@ -28,22 +28,32 @@ def safe_error(error):
 
 
 class StudioJobs:
-    def __init__(self, directory, records, lock, busy, *, on_terminal=None, on_restore=None):
+    def __init__(self, directory, records, lock, busy, *, on_terminal=None, on_restore=None, store=None):
         self.directory, self.records, self.lock, self.busy = directory, records, lock, busy
         self.on_terminal = on_terminal
         self.on_restore = on_restore
+        self.store = store
         self.runtimes = {}
 
     def _save(self, key):
-        save_json(self.directory / f"{key}.json", self.records[key])
+        if self.store is None:
+            save_json(self.directory / f"{key}.json", self.records[key])
+        else:
+            self.store.save_job(self.records[key])
 
     def restore(self):
         self.directory.mkdir(parents=True, exist_ok=True)
         with self.lock:
+            legacy = []
             for path in sorted(self.directory.glob("*.json")):
                 record = read_json(path)
                 if not isinstance(record, dict) or record.get("id") != path.stem:
                     continue
+                if self.store is None:
+                    legacy.append(record)
+                else:
+                    self.store.save_job(record, preserve_existing=True)
+            for record in self.store.jobs() if self.store is not None else legacy:
                 self.records[record["id"]] = record
                 if record.get("status") in ACTIVE:
                     self._finalize(record["id"], "interrupted", stage="服务重启，任务已中断",
@@ -79,8 +89,8 @@ class StudioJobs:
                           error="已有文件已保留。请重新连接并检查结果，不要重复提交云端任务")
             try:
                 self._save(key)
-            except OSError:
-                pass  # Disk may be unavailable; live clients still see a terminal state.
+            except Exception:
+                pass  # Storage may be unavailable; live clients still see a terminal state.
 
     def update(self, key, **values):
         with self.lock:

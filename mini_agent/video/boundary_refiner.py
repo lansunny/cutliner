@@ -22,7 +22,8 @@ def merge_refinements(predictions, result, duration):
     indices = [row["coarse_index"] for row in updates]
     if len(indices) != len(set(indices)) or any(not 1 <= i <= min(3, len(predictions)) for i in indices):
         raise ValueError("边界网络返回了重复或未知候选")
-    ordered = []
+    full_frame = result.get("decode", {}).get("frame_view") == "fit"
+    ordered, accepted, dropped = [], {}, []
     for update in sorted(updates, key=lambda row: (-row["selection_logit"], row["coarse_index"])):
         index = update["coarse_index"]
         original = predictions[index - 1]
@@ -38,16 +39,39 @@ def merge_refinements(predictions, result, duration):
             raise ValueError("边界预测与留存证据不一致")
         if not 0 <= update["predicted_iou"] <= 1:
             raise ValueError("非法的模型质量分数")
-        ordered.append({**original, "start_seconds": start, "end_seconds": end,
+        original_duration = original["end_seconds"] - original["start_seconds"]
+        retained = max(0., min(end, original["end_seconds"]) - max(start, original["start_seconds"])) / original_duration
+        # The frozen boundary/ranking head was trained on center-cropped inputs.
+        # With full-frame features, a large trim needs new evidence, not merely
+        # a scalar logit. Keep such a proposal for audit but do not auto-apply it.
+        if full_frame and retained < .90:
+            dropped.append({"coarse_index": index, "reason": "full_frame_large_trim",
+                            "coarse_duration_retained": retained})
+            continue
+        # A short-context proposal is an alternative to broad candidates, not
+        # an instruction to expand it back into one. Agent can still inspect
+        # neighboring source frames and propose a supported boundary repair.
+        if full_frame and original.get("short_context") and end-start > original_duration*1.25:
+            dropped.append({"coarse_index": index, "reason": "short_context_large_expansion",
+                            "proposed_duration_ratio": (end-start)/original_duration})
+            continue
+        row = {**original, "start_seconds": start, "end_seconds": end,
             "boundary_refinement": evidence,
             "model_evidence": [*original["model_evidence"], {
                 "modality": "visual", "model_name": result["model_name"], "label": result["query"],
                 "start_seconds": start, "end_seconds": end, "score": update["predicted_iou"],
                 "score_is_calibrated_probability": False}],
-            "boundary_note": "查询条件局部网络提出的边界，保留粗候选证据；需Agent重新审核实际区间"})
-    # Candidates outside the trained Top-3 budget remain available as coarse
-    # fallbacks, after the refined group. Scores from different models are not mixed.
-    ordered.extend(dict(item) for i, item in enumerate(predictions, 1) if i not in indices)
+            "boundary_note": "查询条件局部网络提出的边界，保留粗候选证据；需Agent重新审核实际区间"}
+        accepted[index] = row
+        ordered.append(row)
+    if full_frame:
+        ordered = [accepted.get(i, dict(item)) for i, item in enumerate(predictions, 1)]
+    else:
+        ordered.extend(dict(item) for i, item in enumerate(predictions, 1) if i not in indices)
+    result["application"] = {
+        "preserved_coarse_order": full_frame, "applied_count": len(accepted),
+        "min_coarse_retained": .90 if full_frame else None, "kept_coarse_boundaries": dropped,
+    }
     for priority, item in enumerate(ordered, 1):
         item["review_priority"] = priority
     return ordered
@@ -56,6 +80,13 @@ def merge_refinements(predictions, result, duration):
 class LocalBoundaryRefiner:
     def __init__(self, manifest: Path, python: Path = DEFAULT_PYTHON):
         self.manifest, self.python = Path(manifest), Path(python)
+
+    def installed(self):
+        if not self.manifest.is_file() or not self.python.is_file():
+            return False
+        manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
+        root = Path(os.getenv("LOCAL_BOUNDARY_ARTIFACT_ROOT") or manifest["artifact_root"])
+        return all((root / manifest[name]).is_file() for name in ("local_checkpoint", "ranker_checkpoint"))
 
     @classmethod
     def from_env(cls):

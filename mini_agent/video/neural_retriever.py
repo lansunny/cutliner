@@ -2,11 +2,13 @@
 
 import asyncio
 import json
+import os
 import subprocess
 from pathlib import Path
 
 from mini_agent.video.audio_visual_events import DEFAULT_PYTHON, PROJECT, LocalAudioVisualEventTool, canonical_events
 from mini_agent.video.boundary_refiner import LocalBoundaryRefiner
+from mini_agent.video.candidate_pool import finalize_refined_pool
 from mini_agent.video.job_control import terminate_process
 from mini_agent.video.schemas import ClipCandidate, ModelIntervalEvidence, VideoMetadata, VideoTaskSpec
 
@@ -47,9 +49,12 @@ def audio_evidence_for_candidate(candidate: ClipCandidate, file_path: Path):
 
 class NeuralVideoRetriever:
     def __init__(self, python: Path = DEFAULT_PYTHON, top_k: int = 12, padding_seconds: float = 1., device="auto",
-                 refine_visual_boundaries: bool = True):
+                 refine_visual_boundaries: bool = True, *, visual_ranking="auto"):
         self.python, self.top_k, self.padding_seconds, self.device = Path(python), top_k, padding_seconds, device
         self.refine_visual_boundaries = refine_visual_boundaries
+        if visual_ranking not in {"auto", "legacy", "frame", "consensus"}:
+            raise ValueError("Unknown visual ranking mode")
+        self.visual_ranking = visual_ranking
 
     async def retrieve(self, task: VideoTaskSpec, metadata: VideoMetadata, *, on_progress=None):
         route, classes = route_task(task)
@@ -60,11 +65,31 @@ class NeuralVideoRetriever:
             raise ValueError("声画模型未配置，不能自动降级成纯视觉或全视频VLM扫描")
         if not self.python.is_file():
             raise FileNotFoundError(f"本地模型Python环境不存在：{self.python}")
+        ranking = self.visual_ranking
+        if ranking == "auto":
+            ranking = ("consensus" if task.visual_search_hints_en else "frame") if metadata.duration_seconds >= 60 else "legacy"
         request = {"route": route, "video": str(metadata.file_path), "start_seconds": 0.,
                    "duration_seconds": metadata.duration_seconds, "visual_query_en": task.visual_query_en,
+                   "visual_search_hints_en": task.visual_search_hints_en if route == "visual" else [],
+                   "visual_ranking": ranking if route == "visual" else "legacy",
+                   "multi_context": route == "visual" and self.visual_ranking == "auto",
                    "audio_event_classes": classes, "audio_match_mode": task.audio_match_mode,
                    "av_run": str(av_tool.run_dir) if av_tool else None, "top_k": self.top_k,
                    "padding_seconds": self.padding_seconds, "device": self.device}
+        refiner = LocalBoundaryRefiner.from_env() if route == "visual" and self.refine_visual_boundaries else None
+        missing_boundary = refiner is not None and not refiner.installed()
+        if missing_boundary:
+            if os.getenv("LOCAL_BOUNDARY_MODEL", "").strip() or os.getenv("LOCAL_BOUNDARY_ARTIFACT_ROOT", "").strip():
+                raise FileNotFoundError("已指定的边界模型资产不完整，请检查清单、权重和模型环境")
+            refiner = None
+        shared_boundary = refiner is not None and refiner.python.resolve() == self.python.resolve()
+        if shared_boundary:
+            request["shared_boundary"] = {"manifest": str(refiner.manifest.resolve())}
+            artifact_root = os.getenv("LOCAL_BOUNDARY_ARTIFACT_ROOT")
+            if artifact_root:
+                request["shared_boundary"]["artifact_root"] = artifact_root
+        elif refiner is not None:
+            request["retain_candidate_reserve"] = True
         command = PROJECT/"experiments/neural_retrieval/retrieve_worker.py"
         process = await asyncio.create_subprocess_exec(str(self.python), "-X", "utf8", str(command),
             cwd=str(command.parent), stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -74,6 +99,10 @@ class NeuralVideoRetriever:
             recent = []
             while line := await process.stderr.readline():
                 text = line.decode("utf-8", errors="replace").rstrip()
+                if text == "CUTLINER_STAGE:refinement":
+                    if on_progress is not None:
+                        on_progress({"stage_id": "refinement", "kind": "action", "message": "读取候选附近画面，修正边界并重排"})
+                    continue
                 print(f"[本地模型] {text}", flush=True)
                 recent.append(text)
                 recent = recent[-12:]
@@ -84,30 +113,37 @@ class NeuralVideoRetriever:
             process.stdin.write((json.dumps(request, ensure_ascii=False)+"\n").encode("utf-8"))
             await process.stdin.drain()
             process.stdin.close()
-            stdout = await asyncio.wait_for(process.stdout.read(), timeout=1800)
+            stdout = await asyncio.wait_for(process.stdout.read(), timeout=3600 if shared_boundary else 1800)
             await process.wait()
             recent = await monitor
             if process.returncode:
                 raise RuntimeError("本地神经检索失败："+"\n".join(recent))
             result = json.loads(stdout.decode("utf-8"))
             for index, item in enumerate(result["predictions"], 1):
-                item["candidate_id"] = f"neural_{index:04d}"
+                item.setdefault("candidate_id", f"neural_{index:04d}")
             if route == "visual" and self.refine_visual_boundaries and result["predictions"]:
-                refiner = LocalBoundaryRefiner.from_env()
-                if refiner is not None:
+                if shared_boundary:
+                    refinement = result["details"]["boundary_refinement"]
+                    if on_progress is not None:
+                        count = refinement.get("application", {}).get("applied_count", len(refinement["refinements"]))
+                        on_progress({"stage_id": "refinement", "kind": "result", "message": f"局部观察完成，采用 {count} 个边界修正"})
+                elif refiner is not None:
                     if on_progress is not None:
                         on_progress({"stage_id": "refinement", "kind": "action", "message": "读取候选附近画面，修正边界并重排"})
                     result["coarse_predictions"] = result["predictions"]
                     result["predictions"], result["details"]["boundary_refinement"] = await refiner.refine(
                         task, metadata, result["predictions"], device=self.device)
+                    finalize_refined_pool(result, self.top_k)
                     if on_progress is not None:
-                        count = len(result["details"]["boundary_refinement"]["refinements"])
-                        on_progress({"stage_id": "refinement", "kind": "result", "message": f"已完成 {count} 个候选的边界精修与重排"})
+                        refinement = result["details"]["boundary_refinement"]
+                        count = refinement.get("application", {}).get("applied_count", len(refinement["refinements"]))
+                        on_progress({"stage_id": "refinement", "kind": "result", "message": f"局部观察完成，采用 {count} 个边界修正"})
                 else:
-                    result["details"]["boundary_refinement"] = {"status": "disabled_explicitly"}
+                    result["details"]["boundary_refinement"] = {"status": "unavailable" if missing_boundary else "disabled_explicitly"}
             else:
                 result["details"]["boundary_refinement"] = {"status": "skipped", "reason":
                     "audio_constraints_preserved" if route != "visual" else "disabled_or_no_candidates"}
+            result.pop("candidate_reserve", None)
             candidates = []
             source = {"visual": "qd_detr", "audio_visual": "av_event", "hybrid": "hybrid_neural"}[route]
             for item in result["predictions"]:

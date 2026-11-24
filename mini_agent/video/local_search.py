@@ -18,7 +18,8 @@ from mini_agent.video.media_identity import file_version_status
 
 
 async def deliver_first_match(task, metadata, candidates, run_dir: Path, *, local_verifier=None, allow_remote_review=True,
-                              use_legacy_action_verifier=True, on_progress=None, allow_boundary_repair=False):
+                              use_legacy_action_verifier=True, on_progress=None, allow_boundary_repair=False,
+                              review_agent_factory=None):
     context = {}
     phase = "review"
     repair_count = 0
@@ -85,7 +86,8 @@ async def deliver_first_match(task, metadata, candidates, run_dir: Path, *, loca
                 deferred.append(candidate.candidate_id)
                 continue
             if agent is None:
-                agent = VideoReviewAgent(Settings.from_env(), on_progress=tool_progress)
+                agent = (review_agent_factory(tool_progress) if review_agent_factory
+                         else VideoReviewAgent(Settings.from_env(), on_progress=tool_progress))
             print(f"\n[局部补看] {candidate.candidate_id}：{candidate.start_seconds:.2f}～{candidate.end_seconds:.2f}秒")
             local = await agent.review_interval(
                 task, metadata.file_path, candidate.candidate_id, attempt_dir / "source_review",

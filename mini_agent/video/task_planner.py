@@ -56,6 +56,8 @@ class VideoTaskPlanner:
             "不要将骑木马变成马嘶鸣或增加声音要求。声音任务只翻译可见子条件；完整声音与对白条件不得从query删除。\n"
             "12. event_activity还要求服装、特定人物、人物物体关系或额外动作时requires_extra_visual_grounding=true；"
             "只要求支持的发声事件及发声源可见时为false。声音类别明确为或关系时audio_match_mode=any，否则all；时序关系原样保留在query。\n"
+            "13. 复合的纯视觉需求可填写最多两条互补的短英文 visual_search_hints_en，例如人物加环境、主体加关键动作。"
+            "只使用用户已描述的线索，不猜测物体颜色、动作、身份或道具；这些线索只供本地召回，不能替代完整 query。简单任务或其他路线填空数组。\n"
             "受支持声画事件（英文类别:中文含义）："+json.dumps(EVENT_NAMES, ensure_ascii=False)+"\n\n"
             f"JSON Schema：\n{schema_text}"
         )

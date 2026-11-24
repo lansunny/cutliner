@@ -1,0 +1,51 @@
+name: Studio checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  studio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: cutliner_test
+          POSTGRES_USER: cutliner_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: [5432/tcp]
+        options: >-
+          --health-cmd "pg_isready -U cutliner_test -d cutliner_test"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install application dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Verify SQLite workflow and reload
+        run: python experiments/neural_retrieval/check_studio_catalog.py --built-frontend
+      - name: Verify PostgreSQL workflow and reload
+        env:
+          CUTLINER_TEST_DATABASE_URL: postgresql://cutliner_test@127.0.0.1:${{ job.services.postgres.ports[5432] }}/cutliner_test
+        run: python experiments/neural_retrieval/check_studio_catalog.py --postgres --built-frontend
