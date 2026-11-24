@@ -7,8 +7,10 @@ The English CLIP baseline does not translate arbitrary Chinese queries.
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -20,12 +22,14 @@ import torch.nn.functional as F
 from easydict import EasyDict
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT.parents[1]))
 sys.path.insert(0, str(ROOT / "vendor" / "lighthouse"))
 sys.path.insert(0, str(ROOT / "vendor" / "UniVTG"))
 
 from lighthouse.common.qd_detr import build_model
 from lighthouse.common.utils.span_utils import span_cxw_to_xx
 from run_on_video import clip
+from mini_agent.video.frame_geometry import FIT_PROFILE, square_geometry
 
 
 def load_checkpoint(device):
@@ -41,65 +45,135 @@ def load_checkpoint(device):
     return model, config
 
 
-def extract_features(video, start, duration, clip_model, device, cadence, batch_size, tone_map, hwaccel):
+def _decode_profiles(hwaccel, device, duration, pixel_format):
+    if hwaccel == "none" or (hwaccel == "auto" and (device != "cuda" or (duration or 0) < 60)):
+        return ("none",)
+    fmt = (pixel_format or "").split("(", 1)[0].strip()
+    transfer = {"yuv420p": "nv12", "yuvj420p": "nv12", "yuv420p10le": "p010le"}.get(fmt)
+    if transfer:
+        return (f"cuda_sparse_{transfer}", "cuda", "none")
+    return ("cuda", "none")
+
+
+def _sample_frames(video, start, duration, cadence, tone_map, backend, *, frame_view="center"):
+    threads = "2" if (duration or 0) < 60 else str(min(8, os.cpu_count() or 2))
+    command = [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-hide_banner", "-v", "error",
+               "-xerror", "-threads", threads]
+    filters = f"fps=1/{cadence}"
+    if backend.startswith("cuda"):
+        command += ["-hwaccel", "cuda"]
+    if backend.startswith("cuda_sparse_"):
+        # Thin frames on the decoding device. Copy only the frames CLIP sees.
+        command += ["-hwaccel_output_format", "cuda"]
+        filters += ",hwdownload,format=" + backend.removeprefix("cuda_sparse_")
+    if start:
+        command += ["-ss", str(start)]
+    command += ["-i", str(video)]
+    if duration is not None:
+        command += ["-t", str(duration)]
+    geometry, padding = square_geometry(frame_view)
+    filters += "," + geometry
+    if tone_map:
+        filters += ",zscale=t=linear:npl=100,format=gbrpf32le,tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv"
+    filters += padding
+    command += ["-map", "0:v:0", "-an", "-vf", filters, "-fps_mode", "passthrough",
+                "-threads", "2", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]
+    size = 224 * 224 * 3
+    with tempfile.TemporaryFile() as errors, subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=errors,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    ) as process:
+        try:
+            while raw := process.stdout.read(size):
+                if len(raw) != size:
+                    raise RuntimeError("FFmpeg 输出了不完整的检索帧")
+                yield raw
+            if process.wait(timeout=10):
+                errors.seek(0, os.SEEK_END)
+                errors.seek(max(0, errors.tell() - 1200))
+                raise RuntimeError("FFmpeg 检索解码失败：" + errors.read().decode("utf8", errors="replace"))
+        finally:
+            if process.poll() is None:
+                process.kill()
+
+
+def extract_features(video, start, duration, clip_model, device, cadence, batch_size, tone_map, hwaccel,
+                     *, pixel_format=None, diagnostics=None, frame_view="center"):
+    square_geometry(frame_view)  # Validate before consulting a cache.
     stat = video.stat()
     signature = {
         "path": str(video.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
         "start": start, "duration": duration, "cadence": cadence,
-        "encoder": "CLIP-ViT-B-32-40d36571", "crop": "center224", "tone_map": tone_map,
-        "preprocess_version": 1, "decoder": hwaccel,
+        "encoder": "CLIP-ViT-B-32-40d36571", "crop": "center224" if frame_view == "center" else FIT_PROFILE,
+        "tone_map": tone_map,
+        "preprocess_version": 1,
     }
-    key = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()[:20]
-    cache = ROOT / "cache" / f"{key}.npz"
-    cache.parent.mkdir(exist_ok=True)
-    if cache.exists():
-        with np.load(cache, allow_pickle=False) as data:
-            features = torch.from_numpy(data["features"])
-        print(f"Reusing {len(features)} cached visual features", flush=True)
-        return features, str(cache), True
+    backends = _decode_profiles(hwaccel, device, duration, pixel_format)
+    details = diagnostics if diagnostics is not None else {}
+    details["frame_view"] = frame_view
 
-    input_params = ["-threads", "2"]
-    if hwaccel == "cuda":
-        input_params += ["-hwaccel", "cuda"]
-    if start:
-        input_params += ["-ss", str(start)]
-    output_params = []
-    if duration is not None:
-        output_params += ["-t", str(duration)]
-    filters = f"fps=1/{cadence},scale=224:224:force_original_aspect_ratio=increase,crop=224:224"
-    if tone_map:
-        filters += ",zscale=t=linear:npl=100,format=gbrpf32le,tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv"
-    output_params += ["-vf", filters, "-vsync", "0", "-threads", "2"]
-    reader = imageio_ffmpeg.read_frames(str(video), input_params=input_params, output_params=output_params)
-    features, batch = [], []
+    def cache_for(backend):
+        key = hashlib.sha256(json.dumps({**signature, "decoder": backend}, sort_keys=True).encode()).hexdigest()[:20]
+        return ROOT / "cache" / f"{key}.npz"
+
+    bypass_cache = os.getenv("CUTLINER_BYPASS_VISUAL_CACHE") == "1"
+    if not bypass_cache:
+        for backend in backends:
+            cache = cache_for(backend)
+            if cache.is_file():
+                with np.load(cache, allow_pickle=False) as data:
+                    features = torch.from_numpy(data["features"])
+                details.update(backend=backend, visual_frames=len(features), from_cache=True)
+                print(f"Reusing {len(features)} cached visual features", flush=True)
+                return features, str(cache), True
+
     mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=device).view(1, 3, 1, 1)
     std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=device).view(1, 3, 1, 1)
 
-    def encode():
-        tensor = torch.from_numpy(np.stack(batch)).permute(0, 3, 1, 2).to(device).float() / 255
-        encoded = clip_model.encode_image((tensor - mean) / std).float().cpu()
-        features.append(encoded)
-        batch.clear()
+    for backend in backends:
+        print(f"Visual decoder: {backend}", flush=True)
+        started = time.perf_counter()
+        features, batch = [], []
 
-    try:
-        metadata = next(reader)
-        if tuple(metadata["size"]) != (224, 224):
-            raise RuntimeError(f"Unexpected decoded size: {metadata['size']}")
-        for index, raw in enumerate(reader):
-            batch.append(np.frombuffer(raw, np.uint8).reshape(224, 224, 3))
-            if len(batch) == batch_size:
+        def encode():
+            tensor = torch.from_numpy(np.stack(batch)).permute(0, 3, 1, 2).to(device).float() / 255
+            features.append(clip_model.encode_image((tensor - mean) / std).float().cpu())
+            batch.clear()
+
+        reader = _sample_frames(video, start, duration, cadence, tone_map, backend, frame_view=frame_view)
+        try:
+            count = 0
+            for count, raw in enumerate(reader, 1):
+                batch.append(np.frombuffer(raw, np.uint8).reshape(224, 224, 3))
+                if len(batch) == batch_size:
+                    encode()
+                if count % 25 == 0:
+                    print(f"Encoded {count} frames; scanned about {count * cadence:.0f}s", flush=True)
+            if not count or ((duration or 0) >= 60 and count < int(duration / cadence) - 3):
+                raise RuntimeError(f"检索解码帧数不足：{count}")
+            if batch:
                 encode()
-            if (index + 1) % 25 == 0:
-                print(f"Encoded {index + 1} frames; scanned about {(index + 1) * cadence:.0f}s", flush=True)
-        if batch:
-            encode()
-    finally:
-        reader.close()
-    if not features:
-        raise RuntimeError("No frames decoded")
-    result = torch.cat(features)
-    np.savez_compressed(cache, features=result.numpy())
-    return result, str(cache), False
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            if backend == backends[-1] or isinstance(exc, torch.cuda.OutOfMemoryError):
+                raise
+            print(f"{backend} 解码不可用，尝试下一后端：{str(exc)[-260:]}", flush=True)
+            continue
+        finally:
+            reader.close()
+        result = torch.cat(features)
+        cache = cache_for(backend)
+        cache.parent.mkdir(exist_ok=True)
+        # Avoid publishing partial arrays to concurrent queries.
+        with tempfile.NamedTemporaryFile(dir=cache.parent, suffix=".npz", delete=False) as temp:
+            target = Path(temp.name)
+        try:
+            np.savez_compressed(target, features=result.numpy())
+            target.replace(cache)
+        finally:
+            target.unlink(missing_ok=True)
+        details.update(backend=backend, visual_frames=len(result), from_cache=False,
+                       decode_encode_seconds=time.perf_counter() - started)
+        return result, str(cache), False
 
 
 def temporal_iou(first, second):
@@ -108,37 +182,43 @@ def temporal_iou(first, second):
     return intersection / union if union > 0 else 0.0
 
 
-def locate(model, visual, text, text_mask, config, start, duration, device):
+def locate(model, visual, text, text_mask, config, start, duration, device, *, window_batch=1, window_stride=None):
     # The released model was trained on up to 150s; retain that scale and slide.
+    if window_batch < 1 or (window_stride is not None and window_stride < 1):
+        raise ValueError("The temporal window batch and stride must be positive")
     cadence = float(config.clip_length)
     maximum = min(75, int(config.max_v_l))
     count = len(visual)
     if count <= maximum:
         starts = [0]
     else:
-        stride = max(1, maximum - 15)
+        stride = min(maximum, window_stride) if window_stride is not None else max(1, maximum - 15)
         starts = list(range(0, count - maximum + 1, stride))
         if starts[-1] != count - maximum:
             starts.append(count - maximum)
+    length = min(count, maximum)
+    begin = torch.arange(length, dtype=torch.float32) / length
+    tef = torch.stack([begin, begin + 1.0 / length], dim=-1)
     proposals = []
-    for window_index, offset in enumerate(starts):
-        chunk = F.normalize(visual[offset:offset + maximum], dim=-1, eps=1e-5)
-        length = len(chunk)
-        begin = torch.arange(length, dtype=torch.float32) / length
-        tef = torch.stack([begin, begin + 1.0 / length], dim=-1)
+    for first in range(0, len(starts), window_batch):
+        offsets = starts[first:first+window_batch]
+        size = len(offsets)
+        chunks = torch.stack([visual[i:i+length] for i in offsets])
+        chunks = F.normalize(chunks, dim=-1, eps=1e-5)
         inputs = {
-            "src_vid": torch.cat([chunk, tef], dim=-1).unsqueeze(0).to(device),
-            "src_vid_mask": torch.ones(1, length, device=device),
-            "src_txt": text, "src_txt_mask": text_mask,
+            "src_vid": torch.cat([chunks, tef.expand(size, -1, -1)], dim=-1).to(device),
+            "src_vid_mask": torch.ones(size, length, device=device),
+            "src_txt": text.expand(size, -1, -1), "src_txt_mask": text_mask.expand(size, -1),
         }
         output = model(**inputs)
-        scores = output["pred_logits"][0].softmax(-1)[:, 0].cpu()
-        spans = span_cxw_to_xx(output["pred_spans"][0]).cpu().clamp(0, 1) * length * cadence
-        for span, score in zip(spans.tolist(), scores.tolist()):
-            lower = start + offset * cadence + span[0]
-            upper = min(start + duration, start + offset * cadence + span[1])
-            if upper > lower:
-                proposals.append({"start": lower, "end": upper, "score": score, "window": window_index})
+        scores = output["pred_logits"].softmax(-1)[..., 0].cpu().tolist()
+        spans = (span_cxw_to_xx(output["pred_spans"]).cpu().clamp(0, 1) * length * cadence).tolist()
+        for batch_index, offset in enumerate(offsets):
+            for span, score in zip(spans[batch_index], scores[batch_index]):
+                lower = start + offset * cadence + span[0]
+                upper = min(start + duration, start + offset * cadence + span[1])
+                if upper > lower:
+                    proposals.append({"start": lower, "end": upper, "score": score, "window": first+batch_index})
     selected = []
     for proposal in sorted(proposals, key=lambda item: item["score"], reverse=True):
         if all(temporal_iou(proposal, kept) < 0.5 for kept in selected):
@@ -155,6 +235,8 @@ def main():
     parser.add_argument("--duration", type=float)
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--frame-view", choices=["fit", "center"], default="fit",
+                        help="Preserve the full display frame; center is a legacy comparison only.")
     parser.add_argument("--hwaccel", choices=["auto", "cuda", "none"], default="auto")
     parser.add_argument("--tone-map", action=argparse.BooleanOptionalAction, default=None,
                         help="HDR-to-SDR conversion; auto-detected from video metadata by default")
@@ -197,6 +279,7 @@ def main():
     with torch.inference_mode():
         visual, cache, cache_hit = extract_features(
             args.video, args.start, duration, clip_model, device, float(config.clip_length), args.batch_size, args.tone_map, hwaccel,
+            pixel_format=metadata.get("pix_fmt"), frame_view=args.frame_view,
         )
         feature_seconds = time.perf_counter() - stage
         stage = time.perf_counter()

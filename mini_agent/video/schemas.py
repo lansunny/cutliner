@@ -1,6 +1,6 @@
 from pathlib import Path
-from typing import Literal
-from pydantic import BaseModel,ConfigDict,Field,model_validator
+from typing import Annotated, Literal
+from pydantic import BaseModel,ConfigDict,Field,StringConstraints,model_validator
 
 class VideoModel(BaseModel):
     model_config=ConfigDict(
@@ -23,6 +23,9 @@ class VideoTaskSpec(VideoModel):
     )
     visual_query_en: str | None = Field(default=None, min_length=1, max_length=2000,
         description="供英文CLIP/QD-DETR使用的准确英文视觉查询，保留可见属性、关系、动作和排除条件，不编造声音；完整需求仍在query")
+    visual_search_hints_en: list[Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=240)]] = Field(
+        default_factory=list, max_length=2,
+        description="只用于本地增加候选召回的英文线索，不是新增或替代的审核条件")
     requires_extra_visual_grounding: bool = Field(default=False,
         description="声音任务还包含发声源类别以外的服装、人物身份、空间关系或额外动作时为true；纯视觉任务始终使用视觉定位器")
     audio_match_mode: Literal["all", "any"] = Field(default="all",

@@ -1,0 +1,7 @@
+{
+  "frame_profile": "fit_dar224_v1",
+  "run_dir": "event_runs/full_frame_v1",
+  "base_checkpoint_sha256": "ce537a0a8987c0e43158ab4814c9ed234f2fb010bf4e5f8f062a5322b8ddbbc6",
+  "checkpoint_sha256": "7fa9c09fc2439488313955ce593b5698906cc2bb71ff3e88dd01a1e458c58c62",
+  "report_sha256": "e7e1d492815c62ad7541bb78ea9f2b910a91b3056ff2ac7f039476c6e4be1704"
+}

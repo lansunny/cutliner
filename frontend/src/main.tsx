@@ -4,5 +4,6 @@ import App from './App';
 import './style.css';
 import './flow-theme.css';
 import './agent-workspace.css';
+import './editor-layout.css';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /></React.StrictMode>);

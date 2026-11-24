@@ -3,6 +3,7 @@ r"""Loopback-only cutliner UI/API bridge. No keys are ever sent to the browser.
 Start: D:\CONDA\envs\vlm_agent\python.exe studio_server.py
 Build frontend first with `npm run build` in frontend/.
 """
+import argparse
 import asyncio
 import hashlib
 import json
@@ -11,13 +12,14 @@ import mimetypes
 import os
 import re
 import secrets
+import sqlite3
 import subprocess
 import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from uuid import uuid4
 
 import cv2
@@ -28,6 +30,7 @@ from mini_agent.config import PROJECT_ROOT, Settings
 from mini_agent.video.audio_visual_events import EVENT_NAMES
 from mini_agent.video.clip_exporter import VideoClipExporter
 from mini_agent.video.clip_validator import ClipSelectionValidator
+from mini_agent.video.frame_extractor import _display_frame
 from mini_agent.video.local_search import deliver_first_match
 from mini_agent.video.media_identity import file_version_status, media_id
 from mini_agent.video.job_control import checkpoint, run_sync
@@ -40,34 +43,49 @@ from mini_agent.video.studio_history import (
 )
 from mini_agent.video.task_planner import VideoTaskPlanner
 from studio_jobs import ACTIVE, RETRYABLE, StudioJobs
+from studio_store import StudioStore
 
 ROOT = PROJECT_ROOT
 DATA = ROOT / "studio_data"
 DIST = ROOT / "frontend/dist"
+RUNS_DIR = None
+STORE = None
 TOKEN = secrets.token_urlsafe(32)
 INSTANCE_ID = uuid4().hex
 MEDIA, RUNS, JOBS = {}, {}, {}
 LOCK = threading.RLock()
 BUSY = threading.Lock()
+PREVIEW_LOCK = threading.Lock()
 ALLOWED_ORIGINS = {"http://127.0.0.1:7861", "http://localhost:7861", "http://127.0.0.1:5173", "http://localhost:5173"}
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
 
 
-def register_media(path, label=None, category=None):
+def register_media(path, label=None, category=None, *, role="source"):
     path = Path(path).resolve()
     if not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
         raise ValueError("请选择存在的 MP4 / MOV / MKV / WebM 视频文件")
     key = media_id(path)
     with LOCK:
         if key in MEDIA:
-            return MEDIA[key]
+            item = MEDIA[key]
+            if item.get("role") == "artifact" and role == "source":
+                item = {**item, "role": "source", "updated_at": time.time()}
+                if STORE:
+                    STORE.save_media(item)
+                MEDIA[key] = item
+            return item
     meta = VideoReader().read_metadata(path)
     item = {"id": key, "name": label or path.name, "filename": path.name,
             "category": category, "path": str(path), "duration": meta.duration_seconds,
+            "role": role, "favorite": False, "updated_at": time.time(),
             "width": meta.width, "height": meta.height, "fps": meta.fps,
             "size": path.stat().st_size, "url": f"/api/media/{key}",
             "poster": f"/api/thumb/{key}?t={min(2, meta.duration_seconds / 3):.2f}"}
     with LOCK:
+        if key in MEDIA:
+            return MEDIA[key]
+        if STORE:
+            STORE.save_media(item)
         MEDIA[key] = item
     return item
 
@@ -77,6 +95,64 @@ def registered_media(key):
     if media_id(item["path"]) != key:
         raise ValueError("文件版本已改变，请刷新素材后再操作")
     return item
+
+
+def update_media(key, body):
+    with LOCK:
+        media = registered_media(key)
+        if media.get("role") != "source" or not body or not set(body) <= {"name", "favorite"}:
+            raise ValueError("只能设置素材名称或收藏状态")
+        name = body.get("name", media["name"])
+        favorite = body.get("favorite", media.get("favorite", False))
+        if not isinstance(name, str) or not 1 <= len(name.strip()) <= 160 or not isinstance(favorite, bool):
+            raise ValueError("素材名称或收藏状态无效")
+        item = {**media, "name": name.strip(), "favorite": favorite, "updated_at": time.time()}
+        if STORE:
+            STORE.save_media(item)
+        MEDIA[key] = item
+        return item
+
+
+def storage_error(error):
+    return isinstance(error, sqlite3.Error) or type(error).__module__.split(".", 1)[0] == "psycopg"
+
+
+def compatible_preview(media, start, end):
+    if not all(math.isfinite(value) for value in (start, end)) or not 0 <= start < end <= media["duration"]:
+        raise ValueError("预览范围无效")
+    if end - start > 30.0001:
+        raise ValueError("一次最多预览 30 秒")
+    folder = DATA / "previews"
+    identity = hashlib.sha256(f"v1|{media['id']}|{start:.6f}|{end:.6f}".encode()).hexdigest()[:24]
+    target = folder / f"{identity}.mp4"
+    if target.is_file():
+        return target
+    with PREVIEW_LOCK:
+        if target.is_file():
+            return target
+        folder.mkdir(parents=True, exist_ok=True)
+        temporary = folder / f".{identity}.{uuid4().hex}.mp4"
+        # Fit display aspect ratio even for anamorphic input; pad neither the
+        # original nor the preview to a fixed aspect ratio.
+        scale = ("scale=w='if(gte(dar,1),min(854,trunc(iw/2)*2),max(2,trunc(min(854,ih)*dar/2)*2))'"
+                 ":h='if(gte(dar,1),max(2,trunc(min(854,iw)/dar/2)*2),min(854,trunc(ih/2)*2))',setsar=1")
+        try:
+            command = [imageio_ffmpeg.get_ffmpeg_exe(), "-nostdin", "-v", "error", "-n", "-ss", f"{start:.6f}",
+                       "-threads", "2", "-i", media["path"], "-t", f"{end-start:.6f}", "-map", "0:v:0", "-map", "0:a:0?",
+                       "-vf", scale, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-pix_fmt", "yuv420p",
+                       "-threads", "2", "-c:a", "aac", "-movflags", "+faststart", str(temporary)]
+            result = subprocess.run(command, capture_output=True, timeout=45,
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if result.returncode or not temporary.is_file() or not temporary.stat().st_size:
+                raise ValueError("无法生成选段预览")
+            if media_id(media["path"]) != media["id"]:
+                raise ValueError("素材版本已改变，请重新导入")
+            temporary.replace(target)
+        except subprocess.TimeoutExpired as error:
+            raise ValueError("生成预览超时，请缩短选段") from error
+        finally:
+            temporary.unlink(missing_ok=True)
+    return target
 
 
 def load_run(folder):
@@ -101,34 +177,33 @@ def load_run(folder):
             "delivery": None, "deliveries": [], "latest_artifact_id": artifacts[0]["id"] if artifacts else None}
     for artifact in artifacts:
         public = {**{k: v for k, v in artifact.items() if k != "file_path"},
-                  "media": register_media(artifact["file_path"]) if artifact["available"] else None}
+                  "media": register_media(artifact["file_path"], role="artifact") if artifact["available"] else None}
         item["deliveries"].append(public)
         if delivery is not None and artifact["id"] == delivery["id"]:
             item["delivery"] = public
     with LOCK:
+        if STORE:
+            STORE.save_run(item)
         RUNS[item["id"]] = item
     return item
 
 
 def seed_library():
-    for folder in sorted((ROOT / "runs").glob("neural_video_*"), reverse=True)[:24]:
+    indexed = []
+    if STORE:
+        for item in STORE.media():
+            try:
+                if media_id(item["path"]) == item["id"]:
+                    MEDIA[item["id"]] = item
+            except (OSError, ValueError, KeyError):
+                continue
+        indexed = STORE.run_paths()
+    folders = set(indexed) | set((RUNS_DIR or ROOT / "runs").glob("neural_video_*"))
+    for folder in sorted(folders, reverse=True):
         try:
             load_run(folder)
         except (OSError, ValueError, KeyError):
             continue
-    base = ROOT / "experiments/av_grounding_local/data/ave_events_v1"
-    # Real local research samples; these labels are dataset metadata, not model verdicts.
-    wanted = {"Race car, auto racing": "赛道 / 引擎与速度", "Acoustic guitar": "现场 / 吉他演奏", "Motorcycle": "公路 / 摩托车"}
-    annotations = base / "metadata/Annotations.txt"
-    for line in annotations.read_text(encoding="utf-8").splitlines() if annotations.is_file() else []:
-        fields = line.split("&")
-        if len(fields) < 2 or fields[0] not in wanted:
-            continue
-        path = base / "videos" / (fields[1] + ".mp4")
-        if path.is_file():
-            register_media(path, wanted.pop(fields[0]), fields[0])
-        if not wanted:
-            break
     for path in (DATA / "imports").glob("*") if (DATA / "imports").exists() else []:
         try:
             register_media(path)
@@ -192,7 +267,7 @@ def restore_job(record):
     output = result.get("media")
     if output:
         try:
-            restored = register_media(output["path"])
+            restored = register_media(output["path"], role="artifact")
             if restored["id"] != output["id"]:
                 raise ValueError("输出已改变")
             result["media"] = restored
@@ -291,7 +366,7 @@ async def retrieve(key, body):
                              audio_event_classes=body.get("events", []) if route != "visual" else [],
                              requires_extra_visual_grounding=route == "hybrid")
     route, _ = route_task(task)
-    folder = ROOT / "runs" / f"neural_video_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
+    folder = (RUNS_DIR or ROOT / "runs") / f"neural_video_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
     folder.mkdir(parents=True)
     save_json(folder / "metadata.json", meta.model_dump(mode="json"))
     save_json(folder / "task.json", {"request": request, "task": task.model_dump(mode="json")})
@@ -372,7 +447,7 @@ async def review(key, body, *, persist_in_run=False):
         raise
     state = read_json(folder / "local_search.json", {})
     if result and result.valid and state.get("status") == "satisfied":
-        clip = register_media(result.clips[0].file_path)
+        clip = register_media(result.clips[0].file_path, role="artifact")
         delivered = result.clips[0]
         return {"media": clip, "reviewed": True, "outcome": "delivered", "candidate_id": delivered.candidate_id,
                 "start": delivered.source_start_seconds, "end": delivered.source_end_seconds,
@@ -419,7 +494,7 @@ def export_trim(key, body):
         finish_operation(folder, status="cancelled" if JOBS[key].get("status") == "cancelling" else "failed")
         raise
     job_event(key, {"stage_id": "done", "kind": "result", "message": "手动导出完成，未经内容复核"})
-    return {"media": register_media(report.clips[0].file_path), "reviewed": False, "candidate_id": clip.candidate_id,
+    return {"media": register_media(report.clips[0].file_path, role="artifact"), "reviewed": False, "candidate_id": clip.candidate_id,
             "start": report.clips[0].source_start_seconds, "end": report.clips[0].source_end_seconds,
             "run": load_run(source),
             "message": "已按当前范围导出，未经内容审核"}
@@ -452,10 +527,19 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         parts = parsed.path.strip("/").split("/")
         try:
+            if parsed.path == "/api/health":
+                try:
+                    if STORE:
+                        with STORE.connection() as connection:
+                            connection.execute("SELECT 1").fetchone()
+                    return self.send_json({"status": "ok", "database": STORE.backend if STORE else "legacy"})
+                except Exception:
+                    return self.send_json({"status": "unavailable", "error": "数据库暂不可用"}, 503)
             if parsed.path == "/api/bootstrap":
                 with LOCK:
                     runs = sorted(RUNS.values(), key=lambda run: run.get("updated_at", 0), reverse=True)
-                    media = list(MEDIA.values())
+                    media = sorted((item for item in MEDIA.values() if item.get("role", "source") == "source"),
+                                   key=lambda item: (not item.get("favorite", False), -item.get("updated_at", 0), item["name"]))
                     active_job = next((JOB_MANAGER.public(j["id"]) for j in JOBS.values() if j["status"] in ACTIVE), None)
                     latest_job = JOB_MANAGER.public(max(JOBS.values(), key=lambda j: j.get("started", 0))["id"]) if JOBS else None
                 return self.send_json({"token": TOKEN, "media": media, "runs": runs,
@@ -472,6 +556,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(run)
             if len(parts) == 3 and parts[:2] == ["api", "media"]:
                 return self.send_file(Path(registered_media(parts[2])["path"]))
+            if len(parts) == 3 and parts[:2] == ["api", "preview"]:
+                params = parse_qs(parsed.query)
+                start = float(params.get("start", ["nan"])[0])
+                end = float(params.get("end", ["nan"])[0])
+                return self.send_file(compatible_preview(registered_media(parts[2]), start, end))
             if len(parts) == 3 and parts[:2] == ["api", "thumb"]:
                 media = registered_media(parts[2])
                 at = float(parse_qs(parsed.query).get("t", ["1"])[0])
@@ -488,9 +577,16 @@ class Handler(BaseHTTPRequestHandler):
                         ok, frame = capture.read()
                         if not ok:
                             raise ValueError("无法解码缩略图")
-                        h, w = frame.shape[:2]
-                        frame = cv2.resize(frame, (640, max(1, round(h * 640 / w))))
-                        cv2.imwrite(str(target), frame, [cv2.IMWRITE_JPEG_QUALITY, 83])
+                        frame = _display_frame(frame, capture, max_side=640)
+                        ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 83])
+                        if not ok:
+                            raise ValueError("无法保存缩略图")
+                        temporary = folder / f".{uuid4().hex}.tmp"
+                        try:
+                            temporary.write_bytes(encoded.tobytes())
+                            temporary.replace(target)
+                        finally:
+                            temporary.unlink(missing_ok=True)
                     finally:
                         capture.release()
                 return self.send_file(target)
@@ -498,15 +594,19 @@ class Handler(BaseHTTPRequestHandler):
                 media = registered_media(parts[2])
                 folder = DATA / "waveforms"
                 folder.mkdir(parents=True, exist_ok=True)
-                target = folder / (media["id"] + ".json")
+                target = folder / (media["id"] + ".v2.json")
                 result = read_json(target)
                 if result is None:
-                    command = [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin", "-i", media["path"], "-t", "7200", "-vn", "-ac", "1", "-ar", "1000", "-f", "s16le", "pipe:1"]
-                    process = subprocess.run(command, capture_output=True, timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    duration = min(21600., media["duration"])
+                    command = [imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-nostdin", "-i", media["path"], "-t", str(duration), "-vn", "-ac", "1", "-ar", "1000", "-f", "s16le", "pipe:1"]
+                    try:
+                        process = subprocess.run(command, capture_output=True, timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                    except subprocess.TimeoutExpired as error:
+                        raise ValueError("音轨预览超时") from error
                     samples = np.frombuffer(process.stdout, dtype=np.int16).astype(np.float32)
                     peaks = [float(np.sqrt(np.mean(x * x))) if x.size else 0. for x in np.array_split(samples, 220)]
                     maximum = max(peaks) or 1.
-                    result = {"values": [round(x / maximum, 4) for x in peaks], "has_audio": bool(samples.size), "duration": min(7200, media["duration"])}
+                    result = {"values": [round(x / maximum, 4) for x in peaks], "has_audio": bool(samples.size), "duration": duration}
                     save_json(target, result)
                 return self.send_json(result)
             if parsed.path.startswith("/api/"):
@@ -521,6 +621,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(error)[:500]}, 400)
         except (BrokenPipeError, ConnectionResetError):
             pass
+        except Exception as error:
+            if not storage_error(error):
+                raise
+            self.send_json({"error": "数据库暂不可用"}, 503)
 
     def do_POST(self):
         if not self.valid_host() or self.headers.get("X-Studio-Token") != TOKEN or (self.headers.get("Origin") and self.headers["Origin"] not in ALLOWED_ORIGINS):
@@ -530,7 +634,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/import/upload":
                 if not 0 < length <= 4 * 1024**3:
                     raise ValueError("文件须小于 4 GB；更大素材请通过本地路径导入")
-                name = Path(self.headers.get("X-Filename", "video.mp4")).name
+                encoded_name = self.headers.get("X-Filename-Encoded")
+                name = Path(unquote(encoded_name) if encoded_name is not None else self.headers.get("X-Filename", "video.mp4")).name
                 suffix = Path(name).suffix.lower()
                 if suffix not in VIDEO_SUFFIXES:
                     raise ValueError("不支持的视频格式")
@@ -538,20 +643,27 @@ class Handler(BaseHTTPRequestHandler):
                 folder.mkdir(parents=True, exist_ok=True)
                 path = folder / (uuid4().hex + suffix)
                 remaining = length
-                with path.open("xb") as stream:
-                    while remaining:
-                        chunk = self.rfile.read(min(1024 * 1024, remaining))
-                        if not chunk:
-                            raise ValueError("上传中断")
-                        stream.write(chunk)
-                        remaining -= len(chunk)
-                return self.send_json({"media": register_media(path, name)})
+                try:
+                    with path.open("xb") as stream:
+                        while remaining:
+                            chunk = self.rfile.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                raise ValueError("上传中断")
+                            stream.write(chunk)
+                            remaining -= len(chunk)
+                    item = register_media(path, name)
+                except Exception:
+                    path.unlink(missing_ok=True)
+                    raise
+                return self.send_json({"media": item}, 201)
             if not 0 < length <= 32768:
                 raise ValueError("请求内容无效")
             body = json.loads(self.rfile.read(length))
             if not isinstance(body, dict):
                 raise ValueError("请求内容必须为对象")
             parts = urlparse(self.path).path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "media"] and parts[3] == "preferences":
+                return self.send_json({"media": update_media(parts[2], body)})
             if len(parts) == 4 and parts[:2] == ["api", "jobs"]:
                 if parts[3] == "cancel":
                     return self.send_json(JOB_MANAGER.cancel(parts[2]))
@@ -585,6 +697,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": "Not found"}, 404)
         except (ValueError, OSError, KeyError) as error:
             self.send_json({"error": str(error)[:500]}, 400)
+        except Exception as error:
+            if not storage_error(error):
+                raise
+            self.send_json({"error": "数据库暂不可用"}, 503)
 
     def send_file(self, path):
         if not path.is_file():
@@ -633,18 +749,40 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
 
-if __name__ == "__main__":
-    DATA.mkdir(exist_ok=True)
-    seed_library()
-    JOB_MANAGER.restore()
-    server = ThreadingHTTPServer(("127.0.0.1", 7861), Handler)
-    server.daemon_threads = True
-    print("cutliner: http://127.0.0.1:7861", flush=True)
-    print("Local media stays on this computer. Cloud planning/review requires explicit UI opt-in.", flush=True)
+def main():
+    global DATA, RUNS_DIR, STORE, JOB_MANAGER
+    cli = argparse.ArgumentParser(description="Cutliner local web workspace")
+    cli.add_argument("--port", type=int, default=7861)
+    cli.add_argument("--data-dir", type=Path, default=os.getenv("CUTLINER_DATA_DIR"))
+    cli.add_argument("--runs-dir", type=Path, default=os.getenv("CUTLINER_RUNS_DIR"))
+    args = cli.parse_args()
+    if not 1 <= args.port <= 65535:
+        cli.error("port must be between 1 and 65535")
+    if args.data_dir:
+        DATA = args.data_dir.resolve()
+    RUNS_DIR = args.runs_dir.resolve() if args.runs_dir else (DATA / "runs" if args.data_dir else ROOT / "runs")
+    DATA.mkdir(parents=True, exist_ok=True)
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    STORE = StudioStore(DATA / "cutliner.sqlite3", os.getenv("CUTLINER_DATABASE_URL", ""))
     try:
+        STORE.initialize()
+    except Exception as error:
+        raise SystemExit(f"Could not start {STORE.backend} storage ({type(error).__name__}); check local database configuration.") from None
+    JOB_MANAGER = StudioJobs(DATA / "jobs", JOBS, LOCK, BUSY, on_terminal=terminal_job, on_restore=restore_job, store=STORE)
+    ALLOWED_ORIGINS.update((f"http://127.0.0.1:{args.port}", f"http://localhost:{args.port}"))
+    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    server.daemon_threads = True
+    try:
+        seed_library()
+        JOB_MANAGER.restore()
+        print(f"cutliner: http://127.0.0.1:{args.port} · {STORE.backend}", flush=True)
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
         JOB_MANAGER.close()
+
+
+if __name__ == "__main__":
+    main()

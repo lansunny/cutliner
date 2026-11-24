@@ -6,6 +6,28 @@ from mini_agent.video.reader import VideoReader
 from mini_agent.video.job_control import checkpoint
 from mini_agent.video.schemas import FrameSamplePoint, ShotSegment, VideoFrame, VideoMetadata
 
+
+def _display_frame(image, capture, max_side=None):
+    """Return the entire decoded frame with square pixels for JPEG evidence."""
+    height, width = image.shape[:2]
+    numerator = capture.get(cv2.CAP_PROP_SAR_NUM)
+    denominator = capture.get(cv2.CAP_PROP_SAR_DEN)
+    sar = numerator / denominator if numerator > 0 and denominator > 0 else 1.0
+    if not math.isfinite(sar) or sar <= 0:
+        sar = 1.0
+    rotation = capture.get(cv2.CAP_PROP_ORIENTATION_META)
+    if capture.get(cv2.CAP_PROP_ORIENTATION_AUTO) and rotation % 180 == 90:
+        sar = 1 / sar  # OpenCV already rotated the decoded raster.
+    display_width = width * sar
+    limit = max_side if max_side is not None else max(height, width)
+    scale = min(1.0, limit / max(height, display_width))
+    target = (max(1, round(display_width * scale)), max(1, round(height * scale)))
+    if target == (width, height):
+        return image
+    method = cv2.INTER_AREA if target[0] <= width and target[1] <= height else cv2.INTER_LINEAR
+    return cv2.resize(image, target, interpolation=method)
+
+
 class FrameExtractor:
     def __init__(self):
         self.reader=VideoReader()
@@ -57,7 +79,7 @@ class FrameExtractor:
                 )
                 saved, encoded_image=cv2.imencode(
                     ".jpg",
-                    image,
+                    _display_frame(image, capture),
                     [
                         cv2.IMWRITE_JPEG_QUALITY,
                         90
@@ -132,14 +154,7 @@ class FrameExtractor:
                 if frame_index in seen:
                     continue
                 seen.add(frame_index)
-                height, width = image.shape[:2]
-                if max(height, width) > max_side:
-                    scale = max_side / max(height, width)
-                    image = cv2.resize(
-                        image,
-                        (max(1, round(width * scale)), max(1, round(height * scale))),
-                        interpolation=cv2.INTER_AREA,
-                    )
+                image = _display_frame(image, capture, max_side)
                 success, encoded = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
                 if not success:
                     raise RuntimeError("代表帧编码失败")

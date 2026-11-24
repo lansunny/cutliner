@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from openai import AsyncOpenAI, BadRequestError
+from openai import APIStatusError, AsyncOpenAI, BadRequestError
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from mini_agent.config import Settings
@@ -103,9 +103,12 @@ class VideoReviewAgent:
             "pass必须有明确的主体、动作、对象及组合条件证据，至少引用两个不同时刻的匹配帧。"
             "对象同时出现、准备动作、靠近、猜测即将发生，不等于动作已经发生。"
             "逐项核对query的条件，遇到观察文本中的推断不要直接采信matches_query标记。"
+            "visual_search_hints_en仅用于前置召回，不改变query的任何通过条件。"
             "考虑片段前中后的证据及反例；如果要求全程满足或涉及连续动作，稀疏帧无法证明时应补看或uncertain。"
             "明确不符合用reject；无法确定用uncertain；不要为凑片段数量放行。"
             "只有boundary_context.enabled=true时，才允许修复纯视觉源片段的边界。"
+            "自动剪辑不能仅因为任意一处出现过目标就接受整段。若已观察的开头或结尾有明显无关场景，且有足够证据保留目标过程，优先提议收紧边界，再按新区间取证。"
+            "同一动作的准备、进行和结束不算无关场景；切点证据不足时先补看，不以片段变短为目标。"
             "若证据显示动作可能在边缘被截断或两端混入无关内容，可先inspect_context查看邻近原片；"
             "timestamps_seconds仍相对当前候选起点，可为负，但必须在给出的上下文范围内，每次1至4帧、至多一次。"
             "邻近画面只能帮助定位，不能替当前候选或最终成片证明符合要求。"
@@ -241,13 +244,24 @@ class VideoReviewAgent:
             # No original selection rationale is supplied: collect fresh visual evidence.
             try:
                 result = await self.vision.analyze_batch(task, frames)
-            except BadRequestError as error:
-                if "data_inspection_failed" not in str(error).lower() and "datainspectionfailed" not in str(error).lower():
+            except APIStatusError as error:
+                blocked = isinstance(error, BadRequestError) and any(
+                    key in str(error).lower() for key in ("data_inspection_failed", "datainspectionfailed")
+                )
+                body = error.body if isinstance(error.body, dict) else {}
+                fields = {"http_status": error.status_code,
+                          "provider_code": error.code if isinstance(error.code, str) else None,
+                          "request_id": error.request_id or body.get("request_id")}
+                fields = {k: v for k, v in fields.items() if isinstance(v, (int, str)) and len(str(v)) <= 160}
+                indices = [f.frame_index for f in frames]
+                if not blocked:
+                    record({"tool": "inspect_frames", "status": "rate_limited" if error.status_code == 429 else "http_error",
+                            "frame_indices": indices, **fields})
                     raise
                 blocked_by_provider = True
                 message = "千问内容审核拦截本次图片请求，未完成复核；保留文件待人工确认，不自动重试"
                 record({"tool": "inspect_frames", "status": "blocked_by_provider",
-                        "frame_indices": [f.frame_index for f in frames], "message": message})
+                        "frame_indices": indices, "message": message, **fields})
                 print("[复核暂停] " + message, flush=True)
                 return message
             (context_evidence if context else evidence).extend(result)
