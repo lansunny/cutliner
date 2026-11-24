@@ -1,4 +1,8 @@
 <p align="center">
+  <strong>简体中文</strong> · <a href="README.en.md">English</a>
+</p>
+
+<p align="center">
   <img src="docs/assets/cover.svg" alt="Cutliner — 长视频检索与 Agent 剪辑" width="100%">
 </p>
 
